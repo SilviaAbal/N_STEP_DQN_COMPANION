@@ -16,31 +16,31 @@ import copy
 from natsort import natsorted, ns
 import pickle
 import os
+
+# ----------------------------------
 #CONFIGURATION GLOBAL ENVIRONMENT VARIABLES
+# ----------------------------------
 ACTION_SPACE = cfg.ACTION_SPACE
 N_ATOMIC_ACTIONS = cfg.N_ATOMIC_ACTIONS
 N_OBJECTS = cfg.N_OBJECTS
 VWM = (N_OBJECTS-1)*2
-
 ATOMIC_ACTIONS_MEANINGS = cfg.ATOMIC_ACTIONS_MEANINGS
 OBJECTS_MEANINGS = cfg.OBJECTS_MEANINGS
 ROBOT_ACTIONS_MEANINGS = copy.deepcopy(cfg.ROBOT_ACTIONS_MEANINGS)
 # ROBOT_ACTION_DURATIONS = cfg.ROBOT_ACTION_DURATIONS
 ROBOT_POSSIBLE_INIT_ACTIONS = cfg.ROBOT_POSSIBLE_INIT_ACTIONS
 OBJECTS_INIT_STATE = copy.deepcopy(cfg.OBJECTS_INIT_STATE)
-
-VERSION = cfg.VERSION
 POSITIVE_REWARD = cfg.POSITIVE_REWARD
-
 Z_hidden_state = cfg.Z_hidden_state
 Z_HIDDEN = cfg.Z_HIDDEN
-
 INTERACTIVE_OBJECTS_ROBOT = copy.deepcopy(cfg.INTERACTIVE_OBJECTS_ROBOT)
 ONLY_RECOGNITION = cfg.ONLY_RECOGNITION
 NORMALIZE_DATA = cfg.NORMALIZE_DATA
 TEMPORAL_CTX = ACTION_SPACE +1
-#ANNOTATION-RELATED VARIABLES
 
+# ----------------------------------
+#ANNOTATION-RELATED VARIABLES
+# ----------------------------------
 if ONLY_RECOGNITION:
     dataset = 'dataset_pred'
 else:
@@ -103,7 +103,6 @@ annotations = np.load(path_labels_pkl, allow_pickle=True)
 
 class BasicEnv(gym.Env):
     message = "Custom environment for recipe preparation scenario."
-
 
     def __init__(self, display=False, test=False):
         self.action_space = gym.spaces.Discrete(ACTION_SPACE) #[0, ACTION_SPACE-1]
@@ -229,9 +228,28 @@ class BasicEnv(gym.Env):
         self.reward_energy = -cfg.ROBOT_AVERAGE_DURATIONS[action]*FACTOR_ENERGY_PENALTY #ENERGY PENALTY
 
     def get_possibility_objects_in_table (self, annot):
+        """
+        Function that extracts from the video (annotations) the actions that the robot must do and when 
+        it can do them. It returns a dataframe indicating "object", "in table", "frame_init" and "frame_end". 
+        On the one hand, "object" indicates the object involved in the action, "in table" refers to the action 
+        to be performed; "in table" = 1 corresponds to taking the object and "in table"= 0 corresponds to letting 
+        it in the fridge. All the scenarios in the videos start with the objects in the fridge. On the other hand, 
+        "frame_init" and "frame_end" denote when the action can start and when it can end. It could start later than 
+        frame_init as long as it does not exceed frame_end, otherwise it will make the person wait, it is a possible 
+        and considered case, but undesired (it will have time penalty).
 
+        Parameters
+        ----------
+        annot : DataFrame
+            Contains video annotations.
+
+        Returns
+        -------
+        df_video: DataFrame
+            Contains the actions that the robot must do and when 
+            it can do them.
+        """
         person_states = annot['label']
-
         objects_video = []
         in_table_video = []
         fr_init_video = []
@@ -278,7 +296,20 @@ class BasicEnv(gym.Env):
         return df_video
 
     def get_minimum_execution_times(self):
+        """
+        Extended version of the previous function, where 'Actions', 'Max_time_to_save' and 'action_idx' are added to the dataframe. 
+        "Actions" indicates the name of the action "bring jam" for example, for debugging purposes, "Max_time_to_save", indicates 
+        the maximum time that the robot can cut over the estimated time of the video and 'action_idx' indicates the index of the action. 
+        This function is used when an update of the annotations is made for this last variable, action idx, which must be updated. 
 
+        Returns
+        -------
+        total_minimum_time_execution: int
+            indicates the minimum number of frames with which a recipe can be made with the robot. 
+            That is, it is the case in which the robot has performed the actions it was supposed to do in time.
+        df_video_dataset: DataFrame
+            contains important information on the actions to be performed by the robot.
+        """
         global annotations
         df_video = self.get_possibility_objects_in_table(annotations)
         name_actions = []
@@ -298,10 +329,7 @@ class BasicEnv(gym.Env):
                 video_dict[i] = 0
     
             person_states = annotations['label']
-            
-            # total_minimum_time_execution = 0
-           
-            # df_video_dataset = df_video
+
             df_video_dataset = df_video.copy()
             df_video_dataset['Max_time_to_save'] = [0]*len(df_video_dataset)
             df_video_dataset['action_idx'] = [0]*len(df_video_dataset)
@@ -314,7 +342,6 @@ class BasicEnv(gym.Env):
                                 if idx != 0:
                                     action_name = 'bring '+ obj
                                     fr_init = annotations['frame_init'][idx-1]
-    
                                     df_video_dataset['Frame init'].loc[df_video_dataset['Actions']==action_name] = fr_init
                                     keys = [k for k, v in ROBOT_ACTIONS_MEANINGS.items() if v == action_name]
                                     df_video_dataset['Max_time_to_save'].loc[df_video_dataset['Actions']==action_name] = annotations['frame_end'][idx] - annotations['frame_end'][idx-1]
@@ -330,13 +357,26 @@ class BasicEnv(gym.Env):
                             #     # df_video_dataset['Max_time_to_save'].loc[df_video_dataset['Actions']==action_name] = annotations['frame_end'][idx] - annotations['frame_end'][idx-1] - ROBOT_ACTION_DURATIONS[keys[0]]
                             #     df_video_dataset['action_idx'].loc[df_video_dataset['Actions']==action_name] = idx
     
-    
                 df_video_dataset.sort_values("Frame init")
-                # print(df_video_dataset)
                 total_minimum_time_execution = annotations['frame_end'][len(annotations)-1] - df_video_dataset['Max_time_to_save'].sum()
+
         return total_minimum_time_execution,df_video_dataset
 
     def get_energy_robot_reward(self,action):
+        """
+        Function that sets the energy reward of the robot (self.reward_energy), if the robot performs an action of the recipe the reward will be 0 (the maximum) 
+        otherwise it will receive a punishment proportional to the time it takes to perform that action.
+
+        Parameters
+        ----------
+        action : int
+            action taken by the robot.
+
+        Returns
+        -------
+        None.
+
+        """
         global memory_objects_in_table, frame, annotations_orig
 
         df_video = self.get_possibility_objects_in_table(annotations_orig)
@@ -409,7 +449,19 @@ class BasicEnv(gym.Env):
             self.reward_energy = self.reward_energy
             
     def update_objects_in_table (self, action):
+        """
+        Function that updates the vector of objects on the table, if the action take milk has been done, the object will be set to 1.
 
+        Parameters
+        ----------
+        action : int
+            action taken by the robot.
+
+        Returns
+        -------
+        None.
+
+        """
         meaning_action = ROBOT_ACTIONS_MEANINGS.copy()[action]
         for obj in INTERACTIVE_OBJECTS_ROBOT:
             if obj in meaning_action:
@@ -420,6 +472,19 @@ class BasicEnv(gym.Env):
                     self.objects_in_table[obj] = 0
 
     def possible_actions_taken_robot (self):
+        """
+        Function that returns a vector indicating the actions that the robot can do. 
+        For example, if the milk is on the table the robot cannot take the milk from the fridge 
+        because it is not there, so that action will not be among the possibilities.
+
+        Returns
+        -------
+        possible_actions: list
+            list of length equal to the number of actions that the robot can perform, 
+            each position of the list is assigned to an action of the robot (see configuration file), 
+            if it is possible to perform the action the value will be 1.
+
+        """
         bring_actions = []
         for x in INTERACTIVE_OBJECTS_ROBOT:
             bring_actions.append(''.join('bring '+ x))
@@ -465,7 +530,19 @@ class BasicEnv(gym.Env):
         return possible_actions
 
     def select_inaction_sample (self, inaction):
-        # random_position = random.randint(0,len(inaction)-1)
+        """
+        Function that selects a random sample from the 'inaction' list. However, now with n-step we are left with the last sample.
+        
+        Parameters
+        ----------
+        inaction : list
+            contains samples of the do nothing action.
+
+        Returns
+        -------
+        None.
+
+        """
         random_position = len(inaction)-1 # AHORA CON N-STEP, NOS QUEDAMOS CON EL ULTIMO, YA QUE GUARDAMOS DE VEZ EN CUANDO NO ACCIONES EN LA MEMORIA
         self.state = inaction[random_position][1] # esto se hace para que el next_state sea el siguiente al guardado
         reward = inaction[random_position][2]
@@ -473,7 +550,24 @@ class BasicEnv(gym.Env):
         return reward
 
     def select_correct_action (self, action):
+        """
+        Similar to an ASR module, it selects the action that is expected from the robot. 
+        At this point the person should already have the desired object and is when he/she 
+        would send by verbal command the action he/she wants the robot to execute.
 
+        Parameters
+        ----------
+        action : int
+            action taken by the robot.
+
+        Returns
+        -------
+        new_threshold: int
+            denotes the new time horizon that it will take for the robot to perform the specified action.
+        correct_action: int
+            correct action to be performed by the robot,it is simulated to be indicated by asr by the user.
+
+        """
         global frame, annotations, ROBOT_ACTION_DURATIONS, healthy_human
 
         length = len(annotations['label']) -1
@@ -495,28 +589,23 @@ class BasicEnv(gym.Env):
 
         return new_threshold, correct_action
 
-    def select_correct_action_video (self, action_idx):
-
-        global frame, annotations, ROBOT_ACTION_DURATIONS
-
-        length = len(annotations['label']) -1
-        last_frame = int(annotations['frame_end'][length])
-
-        real_state = annotations['label'][action_idx]
-
-        for idx, val in ROBOT_ACTION_DURATIONS.items():
-            reward = self._take_action(idx, real_state)
-            if reward > -1:
-                correct_action = idx
-                duration_action = val
-
-        new_threshold = duration_action + frame
-        if new_threshold > last_frame:
-            new_threshold = last_frame
-
-        return new_threshold, correct_action
 
     def update(self, update_type, action):
+        """
+        Updates the video reading time (frame) as well as the action indicator if necessary.
+        
+        Parameters
+        ----------
+        update_type : String
+            It can take two values: "action" or "unnecessary". It has to do with the type of reward it receive when performing the action..
+        action : int
+            action taken by the robot.
+
+        Returns
+        -------
+        None.
+
+        """
         global frame, action_idx, inaction, annotations
 
         length = len(annotations['label']) - 1
@@ -567,12 +656,6 @@ class BasicEnv(gym.Env):
                             elif self.flags['threshold'] == ('first' or 'next action'):
                                 if frame > fr_end:
                                     frame = fr_end
-                            # if action == 1:
-                            #     print(self.flags)
-                            #     print('Frame end: ', fr_end)
-                            #     print('Frame init next: ', fr_init_next)
-                            #     pdb.set_trace()
-
                         else:   
                             frame = int(annotations['frame_end'][action_idx])
                             if action_idx + 1 <= length:
@@ -595,11 +678,11 @@ class BasicEnv(gym.Env):
 
     def time_course (self, action):
         """
-        this function is used to know how the passage of time develops. It sets the time that the robot must do the selected action.
+        This function is used to know how the passage of time develops. It sets the time that the robot must do the selected action.
         Parameters
         ----------
         action : int
-            action taken by the robot..
+            action taken by the robot.
 
         Returns
         -------
@@ -632,9 +715,9 @@ class BasicEnv(gym.Env):
 
         # if action!=5:
             # pdb.set_trace()
-            
-        if action != 5:
-            self.robot_execution_times[action] = 0.95 * self.robot_execution_times[action] + (1-0.95) * self.duration_action
+        if cfg.TEMPORAL_CONTEXT:
+            if action != 5:
+                self.robot_execution_times[action] = 0.95 * self.robot_execution_times[action] + (1-0.95) * self.duration_action
             
         fr_end = int(annotations['frame_end'][action_idx-1])
         fr_init_next = int(annotations['frame_init'][action_idx])
@@ -1029,7 +1112,26 @@ class BasicEnv(gym.Env):
         return reward, new_threshold, optim, frame_post, correct_action
 
     def prints_terminal(self, action, frame_prev, frame_post, reward):
+        """
+        Visualization of what is happening, on the one hand the video of the recipe and 
+        on the other hand the action taken by the robot, indicating start and end time of the actions as well as the rewards received.
 
+        Parameters
+        ----------
+        action : int
+            Action taken by the robot.
+        frame_prev : int
+            the frame prior to the start of the action of the robot.
+        frame_post : TYPE
+            frame of completion of the action of the robot.
+        reward : float
+            reward received for performing the action.
+
+        Returns
+        -------
+        None.
+
+        """
         global annotations
 
         person_states_index = annotations['label']
@@ -1044,11 +1146,8 @@ class BasicEnv(gym.Env):
         data = {"States": person_states, "Frame init": fr_init, "Frame end": fr_end}
 
         df = pd.DataFrame(data)
-
         accion_robot = ROBOT_ACTIONS_MEANINGS[action]
-
         data_robot = {"Robot action":accion_robot, "Frame init": int(frame_prev), "Frame end": str(frame_post), "Reward": reward, "Reward time": self.reward_time, "Reward energy": self.reward_energy, "Time execution": self.time_execution}
-        # pdb.set_trace()
         df_robot = pd.DataFrame(data_robot, index=[0])
 
         print("----------------------------------- Video -----------------------------------")
@@ -1057,6 +1156,19 @@ class BasicEnv(gym.Env):
         print(df_robot)
 
     def prints_debug(self, action):
+        """
+        Visualization of what is happening at the table where the recipes are being made
+
+        Parameters
+        ----------
+        action : int
+            action taken by the robot.
+
+        Returns
+        -------
+        None.
+
+        """
         global annotations, action_idx, memory_objects_in_table, frame
 
         person_states_index = annotations['label']
@@ -1132,13 +1244,15 @@ class BasicEnv(gym.Env):
         """
         Transition from the current state (self.state) to the next one given an action.
 
-        Input:
-            action: (int) action taken by the agent.
-        Output:
-            next_state: (numpy array) state transitioned to after taking action.
-            reward: (int) reward received.
-            done: (bool) True if the episode is finished (the recipe has reached its end).
-            info:
+        Parameters
+        ----------
+        array : array
+            array containing the action taken by the robot as well as configuration elements.
+
+        Returns
+        -------
+        None.
+
         """
         global frame, action_idx, annotations, inaction, memory_objects_in_table, correct_action, path_labels_pkl,ROBOT_ACTION_DURATIONS, FACTOR_ENERGY_PENALTY,ERROR_PROB, healthy_human
 
@@ -1362,12 +1476,11 @@ class BasicEnv(gym.Env):
         self.total_reward += reward
        
 
-        return self.state, reward, done, optim,  self.flags['pdb'], self.reward_time, self.reward_energy, self.time_execution, action, self.flags['threshold'], self.prediction_error, self.total_prediction
+        return  reward, done, optim, self.reward_time, self.reward_energy, self.time_execution, self.prediction_error, self.total_prediction
 
 
     def get_total_reward(self):
         return self.total_reward
-
 
 
     def save_history(self):
@@ -1397,8 +1510,6 @@ class BasicEnv(gym.Env):
 
         global video_idx, action_idx, annotations,annotations_orig, frame, inaction, memory_objects_in_table, path_labels_pkl, recipe
 
-
-        
         inaction = []
         memory_objects_in_table = []
 
@@ -1521,7 +1632,6 @@ class BasicEnv(gym.Env):
         self.prediction_error = 0
         self.total_prediction = 0
 
-
         self.r_history = []
         self.h_history = []
         self.rwd_history = []
@@ -1546,18 +1656,26 @@ class BasicEnv(gym.Env):
 
 
     def _take_action(self, action, state = []):
-        global annotations, action_idx
         """
         Version of the take action function that considers a unique correct robot action for each state, related to the required object and its position (fridge or table).
 
-        Input:
-            action: (int) from the action repertoire taken by the agent.
-        Output:
-            reward: (int) received from the environment.
+        Parameters
+        ----------
+        action : int
+            action taken by the robot.
+        state : list, optional
+            enviorement state. The default is [].
+
+        Returns
+        -------
+        reward: int
+            instant reward received taking into account state and action taken. the reward here can take 
+            these values: 0, -1,5,-5. If it is 0 it means that the action taken is correct, if it is -1 it is incorrect, 
+            if it is 5 it means that you have done it before time and -5 is an unnecessary action (the action required at that time has already been taken).
 
         """
-
-        global memory_objects_in_table
+        global annotations, action_idx, memory_objects_in_table
+         
         if state == []:
             state = undo_one_hot(self.state[0:33]) #Next action prediction
 
@@ -1881,30 +1999,18 @@ class BasicEnv(gym.Env):
     def transition(self):
         """
         Gets a new observation of the environment based on the current frame and updates the state.
-
-        Global variables:
-            frame: current time step.
-            action_idx: index of the NEXT ACTION (state as the predicted action). *The action_idx points towards the next atomic action at the current frame.
-            annotations: pickle with the annotations, in the form of a table.
-
+        
         """
 
         global action_idx, frame, annotations, inaction, memory_objects_in_table, video_idx
 
-
         frame += 1 #Update frame
-        # pdb.set_trace()
+
         if frame <= annotations['frame_end'].iloc[-1]:
             self.time_execution += 1
 
         length = len(annotations['label']) - 1
 
-        # if frame % cfg.DECISION_RATE != 0: return ### que coño es esto????????????????????????????????
-
-        # 1)
-        #GET TIME STEP () (Updates the action_idx)
-        #We transition to a new action index when we surpass the init frame of an action (so that we point towards the next one).
-        # print('freeze: ',self.flags['freeze state'])
         if  self.flags['freeze state'] == False:
             # frame >= annotations['frame_init'][action_idx]
             if  frame >= annotations['frame_init'][action_idx]:
@@ -1918,28 +2024,21 @@ class BasicEnv(gym.Env):
         frame_to_read = int(np.floor(frame/6))
         frame_pkl = 'frame_' + str(frame_to_read).zfill(4) # Name of the pickle (without the .pkl extension)
         path_frame_pkl = os.path.join(videos_realData[video_idx], frame_pkl) # Path to pickle as ./root_realData/videos_realData[video_idx]/frame_pkl
-
-        #print("This is the path to the frame picke: ", path_frame_pkl)
-
         read_state = np.load(path_frame_pkl, allow_pickle=True) # Contents of the pickle. In this case, a 110 dim vector with the Pred Ac., Reg. Ac and VWM
         #print("Contenido del pickle en el frame", frame, "\n", read_state)
 
 
         # 2.2 ) Generate state
-        # data = read_state['data']
-        # pre_softmax = read_state['pre_softmax']
-        # data[0:33] = pre_softmax
+
         data = read_state['data'][:110] #[Ac pred + Ac reg + VWM]
         # OBJECTS IN TABLE
         variations_in_table = len(memory_objects_in_table)
         if variations_in_table < 2:
-
             oit = memory_objects_in_table[0]
         else:
             oit = memory_objects_in_table[variations_in_table-1]
             
         if NORMALIZE_DATA:
-        
             ac_pred = (read_state['data'][0:33] - cfg.MEAN_ACTION_PREDICTION) / cfg.STD_ACTION_PREDICTION
             ac_rec = (read_state['data'][33:66] - cfg.MEAN_ACTION_RECOGNITION) / cfg.STD_ACTION_RECOGNITION
             vwm = (read_state['data'][66:110] - cfg.MEAN_VWM) / cfg.STD_VWM
@@ -1952,11 +2051,7 @@ class BasicEnv(gym.Env):
             
             z = read_state['z']
 
-        
-
-            
         # Ya solo es cuestión de concatenarlo todo en el estado
-    
         if cfg.TEMPORAL_CONTEXT:
             path_time_to_finish_pkl = os.path.join(videos_realData[video_idx], "remaining_frames") # Path to pickle as ./root_realData/videos_realData[video_idx]/frame_pkl
 
@@ -1992,9 +2087,33 @@ class BasicEnv(gym.Env):
                     self.state = np.concatenate((ac_pred,ac_rec,vwm,oit))
     
 
+    def get_video_idx(self):
+        return video_idx
 
+    def summary_of_actions(self):
+        print("\nCORRECT ACTIONS (in time): ", self.CA_intime)
+        print("CORRECT ACTIONS (late): ", self.CA_late)
+        print("INCORRECT ACTIONS (in time): ", self.IA_intime)
+        print("INCORRECT ACTIONS (late): ", self.IA_late)
+        # print("UNNECESSARY ACTIONS (in time): ", self.UA_intime)
+        # print("UNNECESSARY ACTIONS (late): ", self.UA_late)
+        print("UNNECESSARY ACTIONS CORRECT (in time): ", self.UAC_intime)
+        print("UNNECESSARY ACTIONS CORRECT (late): ", self.UAC_late)
+        print("UNNECESSARY ACTIONS INCORRECT (in time): ", self.UAI_intime)
+        print("UNNECESSARY ACTIONS INCORRECT (late): ", self.UAI_late)
+        print("CORRECT INACTIONS: ", self.CI)
+        print("INCORRECT INACTIONS: ", self.II)
+        print("")
 
+    def close(self):
+        pass
+
+# -------------------------------------------------------------------------------------------------------------------
     def CreationDataset(self):
+        """
+        Creates a database to be used for a supervised model
+
+        """
         #ver porque los states aveces tienen un elemento, de resto creo que esta todo ok
         global frame, action_idx, annotations_orig, ROBOT_ACTION_DURATIONS
 
@@ -2114,24 +2233,4 @@ class BasicEnv(gym.Env):
 
         return state_env, action_env, done
 
-    def get_video_idx(self):
-        return video_idx
-
-    def summary_of_actions(self):
-        print("\nCORRECT ACTIONS (in time): ", self.CA_intime)
-        print("CORRECT ACTIONS (late): ", self.CA_late)
-        print("INCORRECT ACTIONS (in time): ", self.IA_intime)
-        print("INCORRECT ACTIONS (late): ", self.IA_late)
-        # print("UNNECESSARY ACTIONS (in time): ", self.UA_intime)
-        # print("UNNECESSARY ACTIONS (late): ", self.UA_late)
-        print("UNNECESSARY ACTIONS CORRECT (in time): ", self.UAC_intime)
-        print("UNNECESSARY ACTIONS CORRECT (late): ", self.UAC_late)
-        print("UNNECESSARY ACTIONS INCORRECT (in time): ", self.UAI_intime)
-        print("UNNECESSARY ACTIONS INCORRECT (late): ", self.UAI_late)
-        print("CORRECT INACTIONS: ", self.CI)
-        print("INCORRECT INACTIONS: ", self.II)
-        print("")
-
-    def close(self):
-        pass
 
