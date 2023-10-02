@@ -101,11 +101,18 @@ path_labels_pkl = os.path.join(videos_realData[video_idx], labels_pkl)
 annotations = np.load(path_labels_pkl, allow_pickle=True)
 
 
+# remember to install the module the first time you install this code somewhere
+# pip install -e gym-basic
+# read instructions from 
+# https://gymnasium.farama.org/tutorials/gymnasium_basics/environment_creation/
+
 class BasicEnv(gym.Env):
     message = "Custom environment for recipe preparation scenario."
 
 
     def __init__(self, display=False, test=False):
+        super(BasicEnv, self).__init__()
+        
         self.action_space = gym.spaces.Discrete(ACTION_SPACE) #[0, ACTION_SPACE-1]
 
         if cfg.TEMPORAL_CONTEXT:
@@ -206,6 +213,8 @@ class BasicEnv(gym.Env):
             self.robot_execution_times = np.zeros(cfg.ACTION_SPACE) #Dimensionalidad igual al repertorio del robot
         self.duration_action = 0 #Valor de duración de una acción
         
+        self.reset()
+        return
         
     def get_frame(self):
         global frame
