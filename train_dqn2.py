@@ -29,10 +29,9 @@ def selectAction(state, exp):
     env = exp['env']
     policyNet = exp['policyNet']
 
-    # 1 - Compute the epsilonTh and update the stepsDone variable
+    # 1 - Compute the epsilonTh
     epsTh = cfg.EPS_END + (cfg.EPS_START - cfg.EPS_END) * \
         math.exp(-1. * exp['stepsDone'] / cfg.EPS_DECAY)
-    exp['stepsDone'] += 1
 
     # 2 - with probability epsTh we take the random action
     r = random.random()
@@ -46,6 +45,38 @@ def selectAction(state, exp):
             action = policyNet(state).max(1)[1].view(1,1)
 
     return action, epsTh
+
+def nStepBackup(exp, action):
+
+    """
+    The enviroment is in a state and we are going to take n-actions (n-env.steps())
+    If we want to implement an n-step, the first action is the one passed as
+    argument to this function (the eps-greedy-possibly-random action). After the
+    action passed as an argument, the next actions taken up to the n-step should
+    all be following optimal policy. This is, using max_a(policyNet(newStates)).
+    Once we had taken n-step actions, we can acumulate the discounted-reward 
+    in the reward variable, and set as next state the ending state given back
+    by the enviroment. The rest of the code outside this function shouldn't 
+    change. With this approach we will take n-actions in a single time-step of
+    the outside for t in count() loop for the episode. So episodes are likely to
+    finish earlier and less updates to the models will be done as n-increases.
+
+    If before finishing the n-steps we reach a terminal state, then, that particular
+    entry por the memory won't be n-step long.
+    """
+    env = exp['env']
+    cfg = exp['cfg']
+
+    observation, reward, terminated, truncated, _ = env.step(action)
+    reward = torch.tensor([reward], device=cfg.DEVICE)
+    done = terminated or truncated
+
+    if terminated:
+        nextState = None
+    else:
+        nextState = torch.tensor(observation, dtype=torch.float32, device=cfg.DEVICE).unsqueeze(0)
+
+    return (nextState, reward, done)
 
 def nStep(exp, action):
 
@@ -65,18 +96,57 @@ def nStep(exp, action):
     If before finishing the n-steps we reach a terminal state, then, that particular
     entry por the memory won't be n-step long.
     """
+    cfg = exp['cfg']
     env = exp['env']
+    N_STEP = cfg.N_STEP
+    GAMMA  = cfg.GAMMA
+    policyNet = exp['policyNet']
 
+    # G is the inmediate discounted n_step reward: 
+    # Rt+1 + gamma*Rt+2 + gamma^2*Rt+3 ...
+    G = 0
+    t = 0
+
+    # the first action is the epsilon greedy action
     observation, reward, terminated, truncated, _ = env.step(action)
-    reward = torch.tensor([reward], device=cfg.DEVICE)
-    done = terminated or truncated
+    #reward *= -1
 
+    exp['stepsDone'] += 1
+    t += 1
+    G += reward
+    
+    # the rest of the N-step actions, have to be optimal
+    with torch.no_grad():
+        for n in range(1,N_STEP):
+
+            # 1 - check if env has ended
+            if terminated or truncated:
+                break 
+
+            # 2 - find the next optimal action
+            nextState = torch.tensor(observation, dtype=torch.float32, device=cfg.DEVICE).unsqueeze(0)
+            nextAction = policyNet(nextState).max(1)[1].view(1,1)
+
+            # 3 - take the a new step
+            observation, reward, terminated, truncated, _ = env.step(nextAction.item())
+            #reward *= -1
+            exp['stepsDone'] += 1
+            t += 1
+
+            # 4 - update the discounted reward
+            G += (GAMMA**n) * reward
+        # 
+    
+    # check if the last n_step ended on a terminal state
     if terminated:
         nextState = None
     else:
         nextState = torch.tensor(observation, dtype=torch.float32, device=cfg.DEVICE).unsqueeze(0)
 
-    return (nextState, reward, done)
+    reward = torch.tensor([G], device=cfg.DEVICE)
+    done = terminated or truncated
+
+    return (nextState, reward, done, t)
 
 def optimizeModel( exp ):
 
@@ -135,8 +205,9 @@ def optimizeModel( exp ):
         nextStateActionValues[nonFinalMask] = targetNet(nextStateBatch).max(1)[0]
 
     # 6 - Now we can compute the targets for the loss function. Here we have to
-    # take care of the n-step discounts
-    expectedStateActionValues = (cfg.GAMMA * nextStateActionValues) + rewardBatch
+    # take care of the n-step discounts only for the model prediction (the instant rewards
+    # are done in the n_step function)
+    expectedStateActionValues = ( (cfg.GAMMA**cfg.N_STEP) * nextStateActionValues) + rewardBatch
     
     # 7 - Finally, let's compute the loss and update the model
     loss = criterion(stateActionValues, expectedStateActionValues.unsqueeze(1))
@@ -184,14 +255,16 @@ def train(epoch, exp):
         state = torch.tensor(state, dtype=torch.float32, device=cfg.DEVICE).unsqueeze(0)
 
         # for each time step until end of episodeoptimizeModel
-        for t in count():
+        t = 0
+        while True:
 
             # 3.1 select an action based on current state and policy
             action, epsTh = selectAction(state, exp)
 
             # 3.2 this is the section in charge of generating entries for the replayMemory
             # Here is where you can implement n-step strategies
-            (nextState, reward, done) = nStep(exp, action.item())
+            (nextState, reward, done, stepsTaken) = nStep(exp, action.item())
+            t += stepsTaken
 
             # 3.3 store this new transition in memory
             rm.push(state, action, nextState, reward)
@@ -218,7 +291,7 @@ def train(epoch, exp):
                 break
         
         # the episode is finished, let's plot stuff
-        #plotEpisodeInfo(st, epoch, epi)
+        # plotEpisodeStats(st, epoch, epi)
 
     plotEpochStats(st, epoch)
     return
