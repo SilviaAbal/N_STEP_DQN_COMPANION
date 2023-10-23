@@ -9,3 +9,4 @@ gym_basic.egg-info/top_level.txt
 gym_basic/envs/__init__.py
 gym_basic/envs/basic_env.py
 gym_basic/envs/main.py
+gym_basic/envs/sim_env.py

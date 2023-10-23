@@ -6,16 +6,16 @@ import torch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training config
-LR = 1e-4
+LR = 1e-3
 EPOCHS = 1
-NUM_EPISODES = 300
+NUM_EPISODES = 10000
 BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 0.99
-EPS_END = 0.05
-EPS_DECAY = 1000
+EPS_END = 0.1
+EPS_DECAY = 5e4
 TAU = 0.005
-N_STEP = 1
+N_STEP = 3
 
 # REPLAY MEMORY
 MEMORY_SIZE = 10000
@@ -57,7 +57,7 @@ OBJECTS_INIT_STATE = { # whether an object is recheable by the person (1) or is 
 	'spoon': 1, 'sugar': 1, 'toaster': 1, 'tomato sauce': 0, 'water': 1
     } 
 
-ENV_VERBOSE = True
+ENV_VERBOSE = False
 ANNOTATIONS_FOLDER = './video_annotations'
 DATASET_NAME = 'dataset_pred_recog_tmp_ctx'
 LABELS_FILE_NAME = 'labels_updated.pkl'

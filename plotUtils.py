@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-
+from scipy import signal
 
 def plotEpisodeStats( st, epoch, epi):
     
@@ -22,28 +22,47 @@ def plotEpochStats( st, epoch ):
 
     p = 'figs/epochs/'+str(epoch)+'_'
 
-    # compute the average stats over each episode
+    # compute some average stats over each episode
     eps = [sum(epi) / len(epi) for epi in st.get('epsilon', epoch)]
     bl  = [sum(epi) / len(epi) for epi in st.get('batch_loss', epoch)]
     aq  = [sum(epi) / len(epi) for epi in st.get('batch_avgMaxQ', epoch)]
 
+    # for the episode delay, we don't do the avg, just keep the last recorded delay
+    ed =  [epi[-1] for epi in st.get('episode_delay', epoch)]
+
     # for the instant reward, we are going to compute the cumulative instant reward
     ir  = [sum(epi) for epi in st.get('instant_reward', epoch)]
+
+    # for the actions taken per episode, we plot the amount of them != 5 ('do nothing')
+    at = []
+    for episode in st.get('actions_taken', epoch):
+        epiActions = [e for t in episode for e in list(t.values())]
+        at.append(sum(1 for e in epiActions if e != 5))
 
     x = list(st.data[epoch].keys())
     # now we can just plot and save the figures
     plotHelper( x, eps, 'episode#', 'epsilon', 'epoch %d, exploring  prob' %epoch, p+'eps.png')
     plotHelper( x, bl, 'episode#', 'avgEpisodeLoss', 'epoch %d, avg loss' %epoch, p+'bl.png')
     plotHelper( x, aq, 'episode#', 'avgMaxQ', 'epoch %d, avg max Q' %epoch, p+'aq.png')
-    plotHelper( x, ir, 'episode#', 'cumReward', 'epoch %d, cumulative reward' %epoch, p+'r.png')
+    plotHelper( x, ir, 'episode#', 'cumReward', 'epoch %d, cumulative reward' %epoch, p+'r.png', True)
+    plotHelper( x, ed, 'episode#', 'delay (frames)', 'epoch %d, delay per recipe' %epoch, p+'delay.png', True)
+    plotHelper( x, at, 'episode#', 'actions taken (!=5)', 'epoch %d, actions per recipe' %epoch, p+'numA.png', True)
     return
 
-def plotHelper( xData, yData, xLabel, yLabel, title, filePath):
+def plotHelper( xData, yData, xLabel, yLabel, title, filePath, addLPF=False):
 
+    
 
     fig, ax = plt.subplots()
+    ax.plot(xData, yData, 'b')
 
-    ax.plot(xData, yData)
+    if len(yData) > 15 and addLPF:
+        order = 4
+        cutoff_freq = 0.01
+        b, a = signal.butter(order, cutoff_freq, btype='low')
+        filt_yData = signal.filtfilt(b, a, yData)
+        ax.plot(xData, filt_yData, 'r')
+
     ax.set_xlabel(xLabel)
     ax.set_ylabel(yLabel)
     ax.set_title(title)

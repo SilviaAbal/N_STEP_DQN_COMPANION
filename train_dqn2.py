@@ -78,7 +78,7 @@ def nStepBackup(exp, action):
 
     return (nextState, reward, done)
 
-def nStep(exp, action):
+def nStep(exp, action, epoch, epi, ti):
 
     """
     The enviroment is in a state and we are going to take n-actions (n-env.steps())
@@ -98,18 +98,21 @@ def nStep(exp, action):
     """
     cfg = exp['cfg']
     env = exp['env']
+    st  = exp['statTracker']
+    policyNet = exp['policyNet']
+    
     N_STEP = cfg.N_STEP
     GAMMA  = cfg.GAMMA
-    policyNet = exp['policyNet']
-
+    
     # G is the inmediate discounted n_step reward: 
     # Rt+1 + gamma*Rt+2 + gamma^2*Rt+3 ...
     G = 0
     t = 0
+    actionsTaken = {}
 
     # the first action is the epsilon greedy action
+    actionsTaken[env.episode.currentFrame] = action
     observation, reward, terminated, truncated, _ = env.step(action)
-    #reward *= -1
 
     exp['stepsDone'] += 1
     t += 1
@@ -128,8 +131,9 @@ def nStep(exp, action):
             nextAction = policyNet(nextState).max(1)[1].view(1,1)
 
             # 3 - take the a new step
+            actionsTaken[env.episode.currentFrame] = nextAction.item()
             observation, reward, terminated, truncated, _ = env.step(nextAction.item())
-            #reward *= -1
+
             exp['stepsDone'] += 1
             t += 1
 
@@ -145,7 +149,7 @@ def nStep(exp, action):
 
     reward = torch.tensor([G], device=cfg.DEVICE)
     done = terminated or truncated
-
+    st.add(epoch, epi, ti+t, 'actions_taken', actionsTaken)
     return (nextState, reward, done, t)
 
 def optimizeModel( exp ):
@@ -258,12 +262,15 @@ def train(epoch, exp):
         t = 0
         while True:
 
+            if epi > cfg.NUM_EPISODES - 300:
+                cfg.EPS_END = 0.0
+
             # 3.1 select an action based on current state and policy
             action, epsTh = selectAction(state, exp)
 
             # 3.2 this is the section in charge of generating entries for the replayMemory
             # Here is where you can implement n-step strategies
-            (nextState, reward, done, stepsTaken) = nStep(exp, action.item())
+            (nextState, reward, done, stepsTaken) = nStep(exp, action.item(), epoch, epi, t)
             t += stepsTaken
 
             # 3.3 store this new transition in memory
@@ -283,18 +290,25 @@ def train(epoch, exp):
             st.add(epoch, epi,t,'batch_loss', loss)
             st.add(epoch, epi,t,'batch_avgMaxQ', avgMaxQ)
             st.add(epoch, epi,t,'instant_reward', reward.item())
+            st.add(epoch, epi,t,'episode_durations', t)
+            st.add(epoch, epi,t,'episode_delay', env.episode.delay)
 
             # 3.8 check if the episode is finished
-            if done:
-                st.add(epoch,epi,t,'episode_durations', t)
-                print("Episode %d, duration %d" %(epi, t))
+            if done:    
+                print("Episode %d, delay %d" %(epi, env.episode.delay))
+                env.episode.storeActionsTaken(epoch, epi, st)
                 break
         
         # the episode is finished, let's plot stuff
         # plotEpisodeStats(st, epoch, epi)
 
     plotEpochStats(st, epoch)
+    for i in range(env.numEpisodes):
+        epi = next(env.allEpisodes)
+        epi.visualizeAndSave(mode='frames')
     return
+
+
 
 def validation( epoch, exp):
 
@@ -317,7 +331,8 @@ def initExperiment(cfg):
 
     # 1 - Initialize enviroment
     #env = gym.make("gym_basic:basic-v0", display = cfg.ENV_DISPLAY, disable_env_checker = cfg.DISABLE_ENV_CHECKER)
-    env = gym.make('CartPole-v1')
+    env = gym.make("gym_basic:basic-v1", mode='train', testFile='fold1_test.txt')
+    #env = gym.make('CartPole-v1')
     num_actions = env.action_space.n
     state, info = env.reset()
     state_dimensionality = len(state)

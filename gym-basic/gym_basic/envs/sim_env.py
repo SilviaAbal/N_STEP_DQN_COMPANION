@@ -3,9 +3,6 @@ import os
 import sys
 import glob
 
-root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-sys.path.append(root_path)
-
 import gym
 from gym import error, spaces, utils
 from gym.utils import seeding
@@ -17,10 +14,8 @@ import matplotlib.patches as patches
 from datetime import datetime
 from itertools import cycle, count
 
+import config2 as cfg
 from utils import readTestTxt
-
-#import config2 as cfg
-
 
 class AtomicAction():
 
@@ -65,6 +60,7 @@ class Episode():
         self.selFeat = range(selFeat)
 
         self.atomicActions = []
+        self.actionsTaken = {}
         self.frameFeatures = None 
         self.lastFrame = None
 
@@ -82,6 +78,7 @@ class Episode():
         self.delay = 0
         self.terminated = False
         self.truncated = False
+        self.actionsTaken = {}
         return
     
     def advanceTo(self, f):
@@ -221,6 +218,13 @@ class Episode():
 
         return ""
     
+    def storeActionsTaken(self, epoch, epi, st):
+
+        self.actionsTaken = {k: v for t in st.data[epoch][epi].keys() 
+            for k, v in st.data[epoch][epi][t]['actions_taken'].items()}
+        
+        return
+    
     def visualizeAndSave(self, mode='time'):
 
         # Create a figure and axis
@@ -252,14 +256,17 @@ class Episode():
             rect = patches.Rectangle((startTime, 0.1), duration, 0.3, linewidth=1, edgecolor=c, facecolor=f)
             
             # Add the action index and action label
-            ax.text(startTime + duration / 2, 0.20, name, ha='center', va='center', fontsize=14, color=c)
-            ax.text(startTime + duration / 2, 0.15, ac.actionLabel, ha='center', va='center', fontsize=14, color=c)
+            ax.text(startTime + duration / 2, 0.20, name, ha='center', va='center', fontsize=10, color=c)
+            ax.text(startTime + duration / 2, 0.15, ac.actionLabel, ha='center', va='center', fontsize=10, color=c)
 
             ax.add_patch(rect)
 
             # Store the x-axis tick positions and labels
             xticks.extend([startTime, startTime + duration])
             xticklabels.extend([str(startTime), str(startTime + duration)])
+
+        for k,v in self.actionsTaken.items():
+            ax.text(k, 0.30, v, ha='center', va='center', fontsize=14, color='g')
 
         # Set the x-axis limit
         if mode == 'time':
@@ -272,7 +279,7 @@ class Episode():
 
         # Set x-axis ticks and labels
         ax.set_xticks(xticks)
-        ax.set_xticklabels(xticklabels, rotation=0, fontsize=14)
+        ax.set_xticklabels(xticklabels, rotation=0, fontsize=8)
         ax.tick_params(axis='x', which='both', bottom=False, top=False)
 
         for i,label in enumerate(ax.get_xticklabels()):
@@ -305,6 +312,11 @@ class SimulatedEnv(gym.Env):
     def __init__(self, mode, testFile):
         super(SimulatedEnv, self).__init__()
 
+        #print("importo cfg")
+        #root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        #sys.path.append(root_path)
+        #import config2 as cfg
+
         """
         Mandatory attributes
             action_space: the Space object corresponding to valid actions
@@ -318,6 +330,7 @@ class SimulatedEnv(gym.Env):
         self.mode = mode
         self.testfile = testFile
         self.allEpisodes = []
+        self.numEpisodes = None
         self.episode = None  
         self.oit = copy.deepcopy(cfg.OBJECTS_INIT_STATE)
         
@@ -326,11 +339,12 @@ class SimulatedEnv(gym.Env):
 
         # 3 - set action and observation spaces
         stateDims = cfg.ANNOTATIONS_DIM + len(cfg.OBJECTS_INIT_STATE)
+        self.stateDims = stateDims
         low = -np.inf * np.ones(stateDims)
         high = np.inf * np.ones(stateDims)
 
-        self.actionSpace = spaces.Discrete(cfg.NUM_ROBOT_ACTIONS)
-        self.observationSpace = spaces.Box(low = low, high = high, dtype=np.float32)
+        self.action_space = spaces.Discrete(cfg.NUM_ROBOT_ACTIONS)
+        self.observation_space = spaces.Box(low = low, high = high, dtype=np.float32)
 
 
         return
@@ -356,6 +370,7 @@ class SimulatedEnv(gym.Env):
             e.append( Episode(f, labelsPath, cfg.ROBOT_ATOMIC_ACTIONS, 
                 cfg.VIDEO_FPS, cfg.ANNOTATIONS_FPS, cfg.ANNOTATIONS_DIM))
 
+        self.numEpisodes = len(e)
         self.allEpisodes = cycle(e)
         return
 
@@ -438,7 +453,10 @@ class SimulatedEnv(gym.Env):
             print("Rt = %.4f, Re = %.4f, R = %.4f" %(Rt, Re, R))
             print("total recipe delay (in frames): %d" %(self.episode.delay))
 
-        return None, None
+        
+        infoDict = {'timeReward': Rt, 'energyReward': Re}
+
+        return nextState, R, self.episode.terminated, self.episode.truncated, infoDict
     
     def stepIdle(self, action):
 
