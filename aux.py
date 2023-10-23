@@ -296,7 +296,9 @@ def plot_each_epoch(i_epoch, phase,save_path,minimum_time, total_results,total_l
                     maximum_time,total_time_execution_epoch,total_reward_energy_epoch,total_reward_time_epoch,
                     total_G_total_epoch,
                     total_G_energy_epoch,
-                    total_G_time_epoch,ex_rate=0):
+                    total_G_time_epoch,
+                    total_q_value=(),
+                    ex_rate=0):
                 
     # n = int(cfg.NUM_EPOCH*0.05)
     # if i_epoch >= 2*n: 
@@ -442,6 +444,25 @@ def plot_each_epoch(i_epoch, phase,save_path,minimum_time, total_results,total_l
 
     fig1.savefig(save_path+'/'+phase+'_REWARD.jpg')
     plt.close(fig1)
+    
+    #---------- REWARDs and Q_behavioral---------------------------
+    if phase == 'train':
+        fig1 = plt.figure(figsize=(20, 6))
+         
+        plt.subplot2grid((1,2), (0,0))
+        plt.plot(total_q_value, 'b:')
+        plt.xlabel("Epoch")
+    
+        plt.title(phase+" | Average Q-value")
+    
+        plt.subplot2grid((1,2), (0,1))
+        plt.plot(total_reward_epoch, 'b-.')
+        plt.xlabel("Epoch")
+    
+        plt.title("Total reward")
+    
+        fig1.savefig(save_path+'/'+phase+'_REWARD_Q_value.jpg')
+        plt.close(fig1)
     
    
     

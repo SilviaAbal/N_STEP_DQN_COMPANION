@@ -26,13 +26,14 @@ import collections
 import torch
 import torch.nn as nn
 import pdb
-from DQN import DQN, ReplayMemory, Transition, init_weights 
+from DQN import DQN, ReplayMemory, Transition, init_weights ,DQN_LSTM
 from config import print_setup
 import config as cfg
 from aux import *
 from natsort import natsorted, ns
 import re
 from generate_history import *
+from PIL import Image
 
 #ARGUMENTS
 import config as cfg
@@ -170,19 +171,7 @@ def action_rate(decision_cont,state,hidden,prev_decision_rate):
     """
     Function that sets the rate at which the robot makes decisions.
     """
-    
-    # if cfg.DECISION_RATE == "random":
-        
-    #     if phase == 'train':
-    #         if decision_cont == 1:
-    #             decision_rate = random.randrange(10,150)
-    #             prev_decision_rate = decision_rate
-    #         else:
-    #              decision_rate = prev_decision_rate
-    #     else:
-    #         decision_rate = 100
-             
-    # else:
+
     decision_rate = cfg.DECISION_RATE
     prev_decision_rate = " "
         
@@ -206,10 +195,7 @@ def action_rate(decision_cont,state,hidden,prev_decision_rate):
 #NUM_EPISODES = args.num_episodes
 EPS_TEST = args.eps_test
 
-
 device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-
-
 
 #TEST 
 #----------------
@@ -289,8 +275,8 @@ n_actions = env.action_space.n
 n_states = env.observation_space.n
 
 hidden_size_LSTM = cfg.hidden_size_LSTM
-policy_net = DQN(n_states, hidden_size_LSTM, n_actions).to(device)
-target_net = DQN(n_states, hidden_size_LSTM, n_actions).to(device)
+policy_net = DQN_LSTM(n_states, hidden_size_LSTM, n_actions).to(device)
+target_net = DQN_LSTM(n_states, hidden_size_LSTM, n_actions).to(device)
 
 # policy_net = DQN(n_states, n_actions).to(device)
 
@@ -448,17 +434,18 @@ for f in pt_files:
                 action_ = action
                 action = action.item()
             
-            array_action = [action,flag_decision, 'val']
-            #next_state_, reward, done, optim, flag_pdb, reward_time, reward_energy, execution_times, correct_action, _ = env.step(array_action)
-            next_state_, reward, done, optim, flag_pdb, reward_time, reward_energy, hri_time, correct_action, type_threshold, error_pred, total_pred = env.step([array_action,array_conf])
-            
+            # array_action = [action,flag_decision, 'val']
+            # #next_state_, reward, done, optim, flag_pdb, reward_time, reward_energy, execution_times, correct_action, _ = env.step(array_action)
+            # next_state_, reward, done, optim, flag_pdb, reward_time, reward_energy, hri_time, correct_action, type_threshold, error_pred, total_pred = env.step([array_action,array_conf])
+            array_action = [action,flag_decision]
+            reward, done, optim, reward_time, reward_energy, hri_time, error_pred, total_pred = env.step([array_action,array_conf])
             
             reward = torch.tensor([reward], device=device)
             reward_energy_ep += reward_energy
             reward_time_ep += reward_time
 
-            next_state = torch.tensor([next_state_], dtype=torch.float,device=device)
-            
+            # next_state = torch.tensor([next_state_], dtype=torch.float,device=device)
+            next_state =torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0)
             if flag_decision:
                 G_total.append(reward.detach().cpu().numpy())
                 G_energy.append(reward_energy)
@@ -785,4 +772,21 @@ else:
         df_idle.to_csv(save_path+'/results_idle_iter_'+NUM_LOOP+'.csv')
         df_test.to_csv(save_path+'/results_test_iter_'+NUM_LOOP+'.csv')
         
+        
+save_path_vis = os.path.join(path, "Visualizations") 
+if not os.path.exists(save_path): os.makedirs(save_path)
+
+if env.test: 
+      for i in range(NUM_EPISODES):
+        create_graph(save_path, i)
+        
+
+path = "./temporal_files/History_Arrays/"
+full_path = save_path + "/Visualization/"
+for images in os.listdir(full_path):
+ 
+    # check if the image ends with png
+    if (images.endswith(".png")):
+        img = Image.open(images)
+        img.save(save_path_vis)
         

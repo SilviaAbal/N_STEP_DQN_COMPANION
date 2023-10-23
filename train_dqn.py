@@ -18,7 +18,7 @@ import torchvision
 import torch.nn as nn
 import torch.optim as optim
 import pickle
-from DQN import DQN, ReplayMemory, Transition, init_weights, PrioritizedReplayMemory
+from DQN import DQN,DQN_LSTM, DQN_LSTM_LateFusion,ReplayMemory, Transition, init_weights, PrioritizedReplayMemory
 from config import print_setup
 import config as cfg
 from aux import *
@@ -91,12 +91,15 @@ HEALTHY = False
 array_conf = [FACTOR_ENERGY_PENALTY,ROBOT_ACTION_DURATIONS, ERROR_PROB,HEALTHY]
 IMPORTANCE_SAMPLING= cfg.IMPORTANCE_SAMPLING
 TEMPORAL_CTX = cfg.TEMPORAL_CONTEXT
+LSTM = cfg.LSTM
+PRIORITAZED_MEMORY = cfg.PRIORITAZED_MEMORY
 device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-
+LAMBDA = cfg.LAMBDA
+LATE_FUSION = cfg.LATE_FUSION
+LATE_FUSION_2 = cfg.LATE_FUSION_2
 # --------------------------------
 #Lists to debug training
 total_loss = [] #List to save the mean values of the episode losses.
-episode_loss = [] #List to save every loss value during a single episode.
 total_reward = [] #List to save the total reward gathered each episode.
 ex_rate = [] #List to save the epsilon value after each episode.
 
@@ -150,6 +153,10 @@ elif PERSONALIZATION == True:
 else:
     exp = '_BASELINE'
     
+if cfg.LSTM:
+    exp_lstm=''
+else:
+    exp_lstm='_no_lstm_'
 
 if ONLY_RECOGNITION:
     type_state = '_ONLY_RECOG_'
@@ -168,8 +175,24 @@ if TEMPORAL_CTX:
     tmp_ctx = '_TMP_CTX'
 else:
     tmp_ctx = ''
+    
+if PRIORITAZED_MEMORY:
+    type_memory = '_PRIORITAZED_MEM_'
+else:
+    type_memory = '_UNIFORM_MEM_'
+if LAMBDA > 0:
+    type_reward = "_Reward_plus_min_"+str(LAMBDA)+'_'
+else:
+    type_reward = ""
+    
+if LATE_FUSION:
+    late_fus = '_LATE_FUSION_'
+elif LATE_FUSION_2:
+    late_fus = '_LATE_FUSION_2'
+else:
+    late_fus = ''
 
-path = os.path.join(ROOT, EXPERIMENT_NAME + '_'+str(N_STEP)+'_STEPS_' + dt_string  +'_'+exp+tmp_ctx+imp_samp_name+'_REPLAY_MEM_'+str(REPLAY_MEMORY)+'_TARGET_UPDT_'+str(TARGET_UPDATE)+'LR_'+str(LR)+ '_GAMMA_'+str(GAMMA)+weight_prob+'_BATCH_'+str(BATCH_SIZE)+'_ENERGY_PENALTY_'+ str(FACTOR_ENERGY_PENALTY)+'_SPEED_'+str(SPEED_ROBOT)+'_ERROR_PROB_'+str(ERROR_PROB))
+path = os.path.join(ROOT, EXPERIMENT_NAME + '_'+str(N_STEP)+'_STEPS_' + dt_string  +'_'+exp+type_reward+exp_lstm+late_fus+type_memory+tmp_ctx+imp_samp_name+'_REPLAY_MEM_'+str(REPLAY_MEMORY)+'_TARGET_UPDT_'+str(TARGET_UPDATE)+'LR_'+str(LR)+ '_GAMMA_'+str(GAMMA)+weight_prob+'_BATCH_'+str(BATCH_SIZE)+'_ENERGY_PENALTY_'+ str(FACTOR_ENERGY_PENALTY)+'_SPEED_'+str(SPEED_ROBOT)+'_ERROR_PROB_'+str(ERROR_PROB))
 
 save_path = os.path.join(path, "Graphics") 
 save_path_hist = os.path.join(save_path, "Histograms") 
@@ -185,6 +208,7 @@ if ONLY_RECOGNITION:
     dataset = 'dataset_pred'
 else:
     dataset = 'dataset_pred_recog_tmp_ctx'
+    # dataset = 'dataset_filtered'
     
 root_realData = "./video_annotations/"+dataset+"/*" #!
 videos_realData = glob.glob(root_realData) #Folders
@@ -227,11 +251,19 @@ NUM_EPOCH = cfg.NUM_EPOCH
 env.reset() #Set initial state
 n_states = env.observation_space.n #Dimensionality of the input of the DQN
 n_actions = env.action_space.n #Dimensionality of the output of the DQN 
-hidden_size_LSTM = cfg.hidden_size_LSTM
-#Networks and optimizer
-policy_net = DQN(n_states, hidden_size_LSTM, n_actions).to(device)
-target_net = DQN(n_states, hidden_size_LSTM, n_actions).to(device)
-
+if LSTM:
+    hidden_size_LSTM = cfg.hidden_size_LSTM
+    if LATE_FUSION or LATE_FUSION_2:
+        #Networks and optimizer
+        policy_net = DQN_LSTM_LateFusion(n_states, hidden_size_LSTM, n_actions).to(device)
+        target_net = DQN_LSTM_LateFusion(n_states, hidden_size_LSTM, n_actions).to(device)
+    else:
+        #Networks and optimizer
+        policy_net = DQN_LSTM(n_states, hidden_size_LSTM, n_actions).to(device)
+        target_net = DQN_LSTM(n_states, hidden_size_LSTM, n_actions).to(device)
+else:
+    policy_net = DQN(n_states, n_actions).to(device)
+    target_net = DQN(n_states, n_actions).to(device)
 
 if PERSONALIZATION and TYPE_PERSONALIZATION != '':
     path_model = './Pretrained/person1.pt'
@@ -281,8 +313,8 @@ if LOAD_MODEL:
 
 
 
-def softmax(x):
-    return(np.exp(x)/np.exp(x).sum())
+# def softmax(x):
+#     return(np.exp(x)/np.exp(x).sum())
 
 def circular_buffer():
     """
@@ -294,7 +326,8 @@ def circular_buffer():
 
 def importance_sampling (state, hidden, action):
     
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY) 
+    # eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY) 
+    eps_threshold =max(EPS_END, EPS_START - (EPS_START - EPS_END) * (steps_done / EPS_DECAY))
     posible_actions = env.possible_actions_taken_robot()
     index_posible_actions = [i for i, x in enumerate(posible_actions) if x == 1]
     
@@ -355,7 +388,7 @@ def post_processed_possible_actions(out,index_posible_actions):
     
 
 #Action taking
-def select_action(state, hidden_train,hidden_val, phase):
+def select_action(state,hidden_train,hidden_val,phase):
     """
     Function that chooses which action to take in a given state based on the exploration-exploitation paradigm.
     This action will always be what is referred to as a possible action; the actions possible by the robot are 
@@ -369,15 +402,31 @@ def select_action(state, hidden_train,hidden_val, phase):
     # print(steps_done)
     # print(i_epoch)
     sample = random.random() #Generate random number [0, 1]
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY) #Get current exploration rate
+    # eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * (steps_done / EPS_DECAY)) #Get current exploration rate
+    eps_threshold =max(EPS_END, EPS_START - (EPS_START - EPS_END) * (steps_done / EPS_DECAY))
     posible_actions = env.possible_actions_taken_robot()
     index_posible_actions = [i for i, x in enumerate(posible_actions) if x == 1]
-
+    # state = state.squeeze(1)
     if phase == 'val':
         with torch.no_grad():
             
-            out, hidden_val = policy_net(state, hidden_val)
-            
+            if LSTM:
+                
+
+                # out, hidden_val = policy_net(state, hidden_val)
+                if LATE_FUSION:
+                    hidden_val = torch.stack(hidden_val,1)
+                    hidden_val = (hidden_val[:,0,:][None,:,:].contiguous(),hidden_val[:,1,:][None,:,:].contiguous())
+                    out, hidden_val = policy_net(state.unsqueeze(0), hidden_val)
+                    out = out[0]
+                    hidden_val =torch.cat(hidden_val,1).squeeze(0)
+                    hidden_val =(hidden_val[0,:][None,:].contiguous(),hidden_val[1,:][None,:].contiguous())
+                else:
+                    out, hidden_val = policy_net(state, hidden_val)
+                      
+            else:
+                out = policy_net(state)
+                
             if True in torch.isnan(out):
                 pdb.set_trace()
             action = post_processed_possible_actions(out,index_posible_actions)
@@ -388,12 +437,26 @@ def select_action(state, hidden_train,hidden_val, phase):
     else:
          if sample > eps_threshold and i_epoch > -1: #If the random number is higher than the current exploration rate, the policy network determines the best action.
              with torch.no_grad():
-                 
-                 out, hidden_train = policy_net(state, hidden_train)
+                 # pdb.set_trace()
+                 if LSTM:
+                     if LATE_FUSION:
+                          hidden_train = torch.stack(hidden_train,1)
+                          hidden_train = (hidden_train[:,0,:][None,:,:].contiguous(),hidden_train[:,1,:][None,:,:].contiguous())
+                          out, hidden_train = policy_net(state.unsqueeze(0), hidden_train)
+                          out = out[0]
+                          hidden_train =torch.cat(hidden_train,1).squeeze(0)
+                          hidden_train=(hidden_train[0,:][None,:].contiguous(),hidden_train[1,:][None,:].contiguous())
+                     else:
+                         out, hidden_train = policy_net(state, hidden_train)
+
+                 else:
+                     out = policy_net(state)
                  # print(out)
                  if True in torch.isnan(out):
                      pdb.set_trace()
+                 # pdb.set_trace()
                  action = post_processed_possible_actions(out,index_posible_actions)
+                 
                  return action, hidden_train
          else:
              if NO_ACTION_PROBABILITY != 0:
@@ -449,49 +512,64 @@ def action_rate(decision_cont,state,hidden_train,hidden_val, phase,prev_decision
 
 def optimize_model(phase):
 
-    
-    
-    # print("len memory: ", len(memory))
-    # print("batch: ", BATCH_SIZE)
     if phase == 'train':
         if len(memory_train) < REPLAY_MEMORY:
         	return
         
         t_batch_size = min(len(memory_train),BATCH_SIZE)
-        transitions, index = memory_train.sample(t_batch_size)  
+        if PRIORITAZED_MEMORY:
+            transitions, index = memory_train.sample(t_batch_size)  
+        else:
+            transitions = memory_train.sample(t_batch_size)  
     else:
         if len(memory_val) < REPLAY_MEMORY:
         	return
         
         t_batch_size = min(len(memory_val),BATCH_SIZE)
-        transitions, _ = memory_val.sample(t_batch_size) 
+        if PRIORITAZED_MEMORY:
+            transitions, _ = memory_val.sample(t_batch_size) 
+        else:
+            transitions = memory_val.sample(t_batch_size) 
     batch = Transition(*zip(*transitions))
 
+    # pdb.set_trace()
     state_batch = torch.stack(batch.state,0)
     action_batch = torch.tensor(batch.action, device= device).unsqueeze(-1)
     reward_batch = torch.tensor(batch.reward, device=device)
-    hidden_batch = torch.cat(batch.hidden)
-    hidden_batch = (hidden_batch[:,0,:][None,:,:].contiguous(),hidden_batch[:,1,:][None,:,:].contiguous())
+    
+    # pdb.set_trace()
+    # Por como esta implementado ya no hace falta emplear la mascara
+    # nonFinalMask = torch.tensor(tuple(map(lambda s: s is not None, state_batch[:,-1,:])), device=device, dtype=torch.bool)
+    # nextStateBatch = torch.cat([s for s in state_batch[:,-1,:] if s is not None])
+    
+    if LSTM:
+        hidden_batch = torch.cat(batch.hidden)
+        hidden_batch = (hidden_batch[:,0,:][None,:,:].contiguous(),hidden_batch[:,1,:][None,:,:].contiguous())
+        # pdb.set_trace()
+        hidden_behavioral = hidden_batch
+        hiden_target = hidden_batch 
+        
+        if phase == 'val':
+            with torch.no_grad():
+                q_behavioral, hidden_behavioral = policy_net(state_batch,hidden_behavioral)
+        else:
+            q_behavioral, hidden_behavioral = policy_net(state_batch,hidden_behavioral)
+    
+        with torch.no_grad():
+            q_target, hiden_target = target_net(state_batch,hiden_target)
+    else:
+        if phase == 'val':
+            with torch.no_grad():
+                q_behavioral = policy_net(state_batch)
+        else:
+            q_behavioral = policy_net(state_batch)
 
+        with torch.no_grad():
+            q_target = target_net(state_batch)
+            
     if IMPORTANCE_SAMPLING:
         importance_sampling_batch = torch.tensor(batch.importance_sampling, device = device)
 
-    hidden_behavioral = hidden_batch
-    hiden_target = hidden_batch 
-
-    if phase == 'val':
-        with torch.no_grad():
-            q_behavioral, hidden_behavioral = policy_net(state_batch,hidden_behavioral)
-    else:
-        q_behavioral, hidden_behavioral = policy_net(state_batch,hidden_behavioral)
-    with torch.no_grad():
-        q_target, hiden_target = target_net(state_batch,hiden_target)
-
-    # st_act_behaviroal = torch.gather(q_behavioral, -1, action_batch)
-    # st_act_target = torch.gather(q_target, -1, action_batch)
-    
-    # st_act_behaviroal = st_act_behaviroal[:,1:N_STEP,:]
-    # st_act_target = st_act_target[:,1:N_STEP,:]
 
     G = torch.zeros(reward_batch.shape[0], device=device)
     if IMPORTANCE_SAMPLING:
@@ -501,42 +579,37 @@ def optimize_model(phase):
             for idx_n_step, val_samp in enumerate(importance_sampling_batch[idx_batch,1:N_STEP]):
                 rho[idx_batch] *= val_samp
         
-        for idx_G,reward in enumerate(reward_batch[idx_batch,0:N_STEP]):
+        for idx_G,reward in enumerate(reward_batch[idx_batch,:N_STEP]):
             G[idx_batch]+= (GAMMA**idx_G)*reward 
             # pdb.set_trace()
 
-    # q_learning 
-    q_values_expected = q_target[-1].max().detach()
+    # pdb.set_trace()
     q_values_expected,_ = torch.max(q_target[:,-1,:],1)
+    # print(q_values_expected.shape)
+    q_behavioral_max, _ = torch.max(q_behavioral,2)
+    q_behavioral_mean = q_behavioral_max.mean()
+    # pdb.set_trace()
+    episode_q_behavioral.append(q_behavioral_mean.detach().item())
 
     
     expected_state_action_values = (q_values_expected * (GAMMA**N_STEP)) + G #Get Q value for current state as R + Q(s')
-
     state_action_values = torch.gather(q_behavioral[:,0,:], -1, action_batch[:,0,:])
-    
     criterion = nn.SmoothL1Loss(reduction='none') #MSE
 
-    # loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1)) ####################
     # priority weights Replay Memory
     loss_each = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
     loss = torch.mean(loss_each)
-    # pdb.set_trace()
 
-
-    # pdb.set_trace()
-    
     if IMPORTANCE_SAMPLING:
         loss = criterion(rho*state_action_values, rho*expected_state_action_values.unsqueeze(1))
     episode_loss.append(loss.detach().item())
 
-    # print('phase: ', phase)
+
     if phase == 'train':
-        # print('phase: ',phase)
-        # pdb.set_trace()
-        # memory_train.plot_priorities(save_path_memory)
-        # memory_train.plot_batch_priorities(index, save_path_memory)
-        # pdb.set_trace()
-        memory_train.update_priorities(index,abs(loss_each).squeeze(1).detach().cpu().numpy())
+        if PRIORITAZED_MEMORY:
+            memory_train.update_priorities(index,abs(loss_each).squeeze(1).detach().cpu().numpy())
+            # memory_train.plot_priorities(save_path_memory)
+            # memory_train.plot_batch_priorities(index, save_path_memory)
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
@@ -544,41 +617,37 @@ def optimize_model(phase):
         #     param.grad.data.clamp_(-1,1)
         # for p in policy_net.parameters():
         #     p.register_hook(lambda grad: torch.clamp(grad, -1, 1))
-
         optimizer.step()
         
 
 target_net.load_state_dict(policy_net.state_dict())
 target_net.eval()
 
-# memory_train = ReplayMemory(REPLAY_MEMORY)
-# memory_val = ReplayMemory(REPLAY_MEMORY)
 
-memory_train = PrioritizedReplayMemory(REPLAY_MEMORY)
-memory_val = PrioritizedReplayMemory(REPLAY_MEMORY)
+if PRIORITAZED_MEMORY:
+    memory_train = PrioritizedReplayMemory(REPLAY_MEMORY)
+    memory_val = PrioritizedReplayMemory(REPLAY_MEMORY)
+else:
+    memory_train = ReplayMemory(REPLAY_MEMORY)
+    memory_val = ReplayMemory(REPLAY_MEMORY)
 
 print_setup(args)
 
 # ----------------------------------
-
 # TRAINING LOOP
 # ----------------------------------
 
 print("\nTraining...")
 print("_"*30)
 
-
-
 steps_done = 0 
 
 t1 = time.time() #Tik
 decision_cont = 0
 
-
-
-
 epoch_loss = []
 total_loss_epoch_train =[]
+total_q_behavioral_train = []
 total_time_execution_epoch_train = []
 total_reward_epoch_train = []
 total_reward_energy_epoch_train = []
@@ -596,6 +665,7 @@ total_CI_epoch_train = []
 total_II_epoch_train = []
 
 total_loss_epoch_val =[]
+# total_q_behavioral_val = []
 total_time_execution_epoch_val = []
 total_reward_epoch_val = []
 total_reward_energy_epoch_val = []
@@ -634,7 +704,7 @@ video_human_times = []
 
 # videos = glob.glob(train_videos)  
 #GET VIDEO TIME AND OPTIMAL TIME (MIN)
-for video in train_videos:
+for video in videos_realData:
     path_video = video + '/human_times'
     human_times = np.load(path_video, allow_pickle=True)  
     min_time = human_times['min']
@@ -667,6 +737,7 @@ while i_epoch < NUM_EPOCH:
     # if len(memory_train) == REPLAY_MEMORY and len(memory_val) == REPLAY_MEMORY:
     if len(memory_train) == REPLAY_MEMORY:
         # MODE= ['train', 'val']
+        # pdb.set_trace()
         steps_done += 1  
         scheduler.step()
     else:
@@ -695,6 +766,7 @@ while i_epoch < NUM_EPOCH:
     for phase in ['train', 'val']:
     # for phase in MODE:
         total_loss = []
+        total_q_behavioral = []
         total_reward = []
         total_reward_energy_ep = []
         total_reward_time_ep = []
@@ -719,8 +791,6 @@ while i_epoch < NUM_EPOCH:
         total_UA_unrelated = []
         
         total_idle = []
-        #total_minimum_time_execution_epoch = []
-        #total_maximum_time_execution_epoch = []
         total_interaction_time_epoch = []
         
         videos_mejorables = []
@@ -741,12 +811,12 @@ while i_epoch < NUM_EPOCH:
             state = torch.tensor(env.reset(), dtype=torch.float, device=device).unsqueeze(0)
             
             episode_loss = []
+            episode_q_behavioral = []
             done = False
             to_optim = True
             
             decision_state = state
-            
-            
+
             reward_energy_ep = 0
             reward_time_ep = 0
             error_pred_ep = 0
@@ -755,11 +825,9 @@ while i_epoch < NUM_EPOCH:
             G_energy_ep = 0
             G_time_ep = 0
             
-
             n_decision_state = []
             n_action = []
             n_reward = []
-            # n_hidden = []
             n_imp_sampling = []
             temporal_buffer = circular_buffer()
             G_total = circular_buffer()
@@ -768,25 +836,31 @@ while i_epoch < NUM_EPOCH:
             # initialize the hidden state. 
             # every time a new recipe is started the hidden latent state must be initialized
             
-            if device.type == 'cuda':
-                hidden = (torch.randn(1,hidden_size_LSTM).cuda(),
-                          torch.randn(1,hidden_size_LSTM).cuda())
-            else:
-                hidden = (torch.randn(hidden_size_LSTM),
-                          torch.randn(hidden_size_LSTM))
-            hidden_train = hidden
-            hidden_val = hidden 
+            if LSTM:
+                if device.type == 'cuda':
+                    hidden = (torch.randn(1,hidden_size_LSTM).cuda(),
+                              torch.randn(1,hidden_size_LSTM).cuda())
+                else:
+                    hidden = (torch.randn(hidden_size_LSTM),
+                              torch.randn(hidden_size_LSTM))
+                hidden_train = hidden
+                hidden_val = hidden 
             # print('estamos en phase: ',phase)
             for t in count(): 
-
+                # print(t)
                 decision_cont += 1
-                n_hidden = hidden
-                if phase == 'train':
-                    hidden_train = n_hidden 
+                if LSTM:
+                   n_hidden = hidden
+                   if phase == 'train':
+                        hidden_train = n_hidden 
+                   else:
+                        hidden_val = n_hidden
+                        
+                if LSTM:
+                    action, flag_decision, prev_decision_rate, hidden = action_rate(decision_cont, torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0), hidden_train, hidden_val, phase, prev_decision_rate)
                 else:
-                    hidden_val = n_hidden
-                action, flag_decision, prev_decision_rate, hidden = action_rate(decision_cont, torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0), hidden_train, hidden_val, phase, prev_decision_rate)
-               
+                    action, flag_decision, prev_decision_rate, _ = action_rate(decision_cont, torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0), 0, 0, phase, prev_decision_rate)
+                
                 if flag_decision: 
                     action_ = action
                     action = action.item()
@@ -796,18 +870,24 @@ while i_epoch < NUM_EPOCH:
                     decision_cont = 0
                     if IMPORTANCE_SAMPLING:
                         imp_sampling = importance_sampling (state, hidden, action) # no se puede enviar ese hidden
-                    if to_optim:
-                        decision_state = torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0)
-                        to_optim = False
-                        
-                
-            
-                array_action = [action,flag_decision]
-                next_state_, reward, done, optim, flag_pdb, reward_time, reward_energy, hri_time, correct_action, type_threshold, error_pred, total_pred = env.step([array_action,array_conf])
 
-            
-                reward = torch.tensor([reward], device=device)
+                    decision_state = torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0)
+                    # decision_state = state
+
+
+                array_action = [action,flag_decision]
+                reward, done, optim, reward_time, reward_energy, hri_time, error_pred, total_pred = env.step([array_action,array_conf])
+
+                # if reward<-1500:
+                #     print(reward)
+                    # pdb.set_trace()
+                # 
+                if LAMBDA > 0:
+                    reward = torch.tensor([reward_energy/1500 + reward_time/1500 + LAMBDA*min(reward_energy,reward_time)/1500],device=device)
+                else:
+                    reward = torch.tensor([reward/1500], device=device)
                 next_state = torch.tensor(env.state, dtype=torch.float, device=device).unsqueeze(0)
+                # print(next_state.shape)
                 reward_energy_ep += reward_energy
                 reward_time_ep += reward_time
                 error_pred_ep += error_pred
@@ -816,40 +896,59 @@ while i_epoch < NUM_EPOCH:
                 # print(' Flag decision after: ', flag_decision)
                 if flag_decision:
                     reward = torch.tensor([reward], device=device)
-                    if IMPORTANCE_SAMPLING:
-                        data = [n_hidden,decision_state, action_,reward, imp_sampling]
+                    if LSTM: 
+                        if IMPORTANCE_SAMPLING:
+                            data = [decision_state, action_,reward, imp_sampling,n_hidden]
+                        else:
+                            data = [decision_state, action_,reward,n_hidden]
                     else:
-                        data = [n_hidden,decision_state, action_,reward]
+                        if IMPORTANCE_SAMPLING:
+                            data = [decision_state, action_,reward, imp_sampling]
+                        else:
+                            data = [decision_state, action_,reward]
                     temporal_buffer.append(data)
-                    # print(action_)
+                    # pdb.set_trace()
+
                 prob_save = False
                 if random.random() < PROB_SAVE: # un 10% del tiepo se guardan en memoria datos de no optimizar, casos de no accion
                     prob_save = True
-                # if i_epoch == 0:
-                #     minimum_time += total_minimum_time_execution
+
                 if optim or prob_save: #Only train if we have taken an action (f==30)                  
                     
                     # tengo que guaradr el temporal buffer pero  solo me quedo con el primer hidden 
                     if len(temporal_buffer) == N_STEP:
                         data_to_save = list(temporal_buffer)
-                        hidden_0 = temporal_buffer[0][0]
-                        n_decision_state = [item[1] for item in data_to_save]
-                        n_action = [item[2] for item in data_to_save]
-                        n_reward = [item[3] for item in data_to_save]
-                        if IMPORTANCE_SAMPLING:
-                            n_imp_sampling = [item[4] for item in data_to_save]
-                            if phase == 'train':
-                                memory_train.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1),n_imp_sampling)
+                        if LSTM:
+                            hidden_0 = temporal_buffer[0][3]
+                        n_decision_state = [item[0] for item in data_to_save]
+                        n_action = [item[1] for item in data_to_save]
+                        n_reward = [item[2] for item in data_to_save]
+                        if LSTM:
+                            if IMPORTANCE_SAMPLING:
+                                n_imp_sampling = [item[4] for item in data_to_save]
+                                if phase == 'train':
+                                    memory_train.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1),n_imp_sampling)
+                                else:
+                                    memory_val.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1),n_imp_sampling)
                             else:
-                                memory_val.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1),n_imp_sampling)
+                                if phase == 'train':
+                                    memory_train.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1))
+                                else:
+                                    memory_val.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1))
                         else:
-                            if phase == 'train':
-                                memory_train.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1))
+                            if IMPORTANCE_SAMPLING:
+                                n_imp_sampling = [item[4] for item in data_to_save]
+                                if phase == 'train':
+                                    memory_train.push(torch.cat(n_decision_state),n_action,n_reward,n_imp_sampling)
+                                else:
+                                    memory_val.push(torch.cat(n_decision_state),n_action,n_reward,n_imp_sampling)
                             else:
-                                memory_val.push(torch.cat(n_decision_state),n_action,n_reward,torch.stack(hidden_0,1))
-                        
+                                if phase == 'train':
+                                    # pdb.set_trace()
+                                    memory_train.push(torch.cat(n_decision_state),n_action,n_reward)
+                                    memory_val.push(torch.cat(n_decision_state),n_action,n_reward)
                         if optim and i_epoch >-1:
-                            to_optim = True
+                            # to_optim = True
 
                             G_total.append(reward.detach().cpu().numpy())
                             G_energy.append(reward_energy)
@@ -872,8 +971,8 @@ while i_epoch < NUM_EPOCH:
                     
                     if episode_loss: 
                     	total_loss.append(mean(episode_loss))
-                    	
-                    	
+                    	total_q_behavioral.append(mean(episode_q_behavioral))
+                    	# print()
                     total_reward.append(env.get_total_reward())
                     total_reward_energy_ep.append(reward_energy_ep)
                     total_reward_time_ep.append(reward_time_ep)
@@ -900,9 +999,7 @@ while i_epoch < NUM_EPOCH:
                     total_UA_unrelated.append(env.UA_unrelated)
                     total_idle.append(env.anticipation) 
                     
-                    #Baseline times
-                    #total_minimum_time_execution_epoch.append(min_time) #Minimum possible time
-                    #total_maximum_time_execution_epoch.append(max_time) #Human max time -> no HRI
+                    
 
                     break #Finish episode
            
@@ -914,16 +1011,11 @@ while i_epoch < NUM_EPOCH:
                 # target_net.load_state_dict(target_net_state_dict)
                 # if i_episode % TARGET_UPDATE == 0: #Copy the Policy Network parameters into Target Network
                 if num_optim % TARGET_UPDATE == 0:
-    
                     target_net.load_state_dict(policy_net.state_dict())
                 
         if flag_break == True:
             break
                             
-        #total_time_video = list(list(zip(*total_times_execution))[0])
-        #total_time_interaction = list(list(zip(*total_times_execution))[1])
-        #minimum_time = sum(total_minimum_time_execution_epoch)
-        #maximum_time = sum(total_maximum_time_execution_epoch)
         interaction_time = sum(total_interaction_time_epoch)
         
         #print("\n\n\n\nIN TRAIN, minimum: ", minimum_time)
@@ -956,8 +1048,10 @@ while i_epoch < NUM_EPOCH:
             
         if phase == 'train':
             
-            
-            transitions, _ = memory_train.sample(REPLAY_MEMORY) 
+            if PRIORITAZED_MEMORY:
+                transitions, _ = memory_train.sample(REPLAY_MEMORY) 
+            else:
+                transitions = memory_train.sample(REPLAY_MEMORY) 
             batch = Transition(*zip(*transitions))
             action_batch = torch.tensor(batch.action, device= device).squeeze().detach().cpu().numpy()
             reward_batch = torch.tensor(batch.reward, device= device).squeeze().detach().cpu().numpy()
@@ -984,124 +1078,128 @@ while i_epoch < NUM_EPOCH:
                 # create data
             if i_epoch % 20 == 0:
                 
-                
                 G = np.zeros(reward_batch.shape[0])
-                for idx_batch in range(reward_batch.shape[0]):
-                    for idx_G,reward in enumerate(reward_batch[idx_batch,0:N_STEP]):
-                        G[idx_batch]+= (GAMMA**idx_G)*reward 
-                    
-                actions = np.reshape(action_batch,action_batch.shape[0]*action_batch.shape[1])
-                y1 = sorted(Counter(actions).items())
-                y1 = [el[1] for el in y1]
+                if N_STEP == 1:
+                    G = reward_batch
                 
-                y1_total = sum(y1)
-                y1_norm = [item/y1_total for item in y1]
-                x = ('0','1','2','3','4','5')                
-                width = 0.6  # the width of the bars: can also be len(x) sequence
-                
-                fig, ax = plt.subplots()
-                p = ax.bar(x,y1, width, label='Epoch '+str(i_epoch))
-                ax.bar_label(p, label_type='center')
-                ax.set_title("Actions saved in memory in epoch "+str(i_epoch))
-                ax.set_ylabel("Action counts")
-                ax.set_xlabel("Action")
-                ax.legend()
-                fig.savefig(save_path_hist+'/Histogram_actions_'+str(i_epoch)+'.jpg')
-                
-                fig, ax = plt.subplots()
-                p = ax.bar(x,y1_norm, width, label='Epoch '+str(i_epoch))
-                ax.bar_label(p, label_type='center')
-                ax.set_title("Actions saved in memory (sum to one) in epoch "+str(i_epoch))
-                ax.set_ylabel("Instances")
-                ax.set_xlabel("Action")
-                ax.legend()
-                fig.savefig(save_path_hist+'/Histogram_actions_norm'+str(i_epoch)+'.jpg')
-                
-                first_no_action_idx = np.where(action_batch[:,0]==5)[0]
-                first_action_idx = np.where(action_batch[:,0]!=5)[0]
-                G_no_action = G[first_no_action_idx]
-                G_action = G[first_action_idx]
-                
-                x = ('NAC','NAI','AC','AI') 
-                NAC = sum(map(lambda i: i == 0, G_no_action))
-                NAI = sum(map(lambda i: i != 0, G_no_action))
-                AC = sum(map(lambda i: i == 0, G_action))
-                AI =sum(map(lambda i: i != 0, G_action))
-                
-                total_G = NAC + NAI + AC + AI 
-                
-                NAC_NORM = NAC / total_G
-                NAI_NORM = NAI / total_G
-                AC_NORM = AC / total_G
-                AI_NORM = AI / total_G
-                
-                fig, ax = plt.subplots()
-                p = ax.bar(x,[NAC,NAI,AC,AI], width, label='Epoch '+str(i_epoch))
-                ax.bar_label(p, label_type='center')
-                ax.set_title("Grouping according to G obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
-                ax.set_ylabel("Instances")
-                ax.set_xlabel(" First action of the N_STEP & G obtained")
-                ax.legend()
-                fig.savefig(save_path_hist+'/Histogram_G_actions_'+str(i_epoch)+'.jpg')
-                
-                fig, ax = plt.subplots()
-                p = ax.bar(x,[NAC_NORM,NAI_NORM,AC_NORM,AI_NORM], width, label='Epoch '+str(i_epoch))
-                ax.bar_label(p, label_type='center')
-                ax.set_title("Grouping according to G obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
-                ax.set_ylabel("Instances")
-                ax.set_xlabel(" First action of the N_STEP & G obtained")
-                ax.legend()
-                fig.savefig(save_path_hist+'/Histogram_G_actions_norm'+str(i_epoch)+'.jpg')
-                
-                no_action_idx = np.where(action_batch==5)
-                coordinates_no_action = np.vstack((no_action_idx[0], no_action_idx[1])).T
-                action_idx = np.where(action_batch!=5)
-                coordinates_action = np.vstack((action_idx[0], action_idx[1])).T
-                reward_no_action = []
-                reward_action = []
                 # pdb.set_trace()
-                # Iterar a través de las coordenadas y agregar los valores correspondientes a la lista de valores deseados
-                for coor in coordinates_no_action:
-                    row, col = coor
-                    reward = reward_batch[row][col]
-                    reward_no_action.append(reward)
+                else:
+                    for idx_batch in range(reward_batch.shape[0]):
+                        for idx_G,reward in enumerate(reward_batch[idx_batch,:N_STEP]):
+                            G[idx_batch]+= (GAMMA**idx_G)*reward 
                     
-                for coor in coordinates_action:
-                    row, col = coor
-                    reward = reward_batch[row][col]
-                    reward_action.append(reward)
+                    actions = np.reshape(action_batch,action_batch.shape[0]*action_batch.shape[1])
+                    y1 = sorted(Counter(actions).items())
+                    y1 = [el[1] for el in y1]
                     
+                    y1_total = sum(y1)
+                    y1_norm = [item/y1_total for item in y1]
+                    x = ('0','1','2','3','4','5')                
+                    width = 0.6  # the width of the bars: can also be len(x) sequence
                     
-                NAC = sum(map(lambda i: i == 0, reward_no_action))
-                NAI = sum(map(lambda i: i != 0, reward_no_action))
-                AC = sum(map(lambda i: i == 0, reward_action))
-                AI =sum(map(lambda i: i != 0, reward_action))
-                
-                total_r = NAC + NAI + AC + AI 
-                
-                NAC_NORM = NAC / total_r
-                NAI_NORM = NAI / total_r
-                AC_NORM = AC / total_r
-                AI_NORM = AI / total_r
-                
-                fig, ax = plt.subplots()
-                p = ax.bar(x,[NAC,NAI,AC,AI], width, label='Epoch '+str(i_epoch))
-                ax.bar_label(p, label_type='center')
-                ax.set_title("Grouping according to R obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
-                ax.set_ylabel("Instances")
-                ax.set_xlabel(" First action of the N_STEP & R obtained")
-                ax.legend()
-                fig.savefig(save_path_hist+'/Histogram_R_actions_'+str(i_epoch)+'.jpg')
-                
-                fig, ax = plt.subplots()
-                p = ax.bar(x,[NAC_NORM,NAI_NORM,AC_NORM,AI_NORM], width, label='Epoch '+str(i_epoch))
-                ax.bar_label(p, label_type='center')
-                ax.set_title("Grouping according to R obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
-                ax.set_ylabel("Instances")
-                ax.set_xlabel(" First action of the N_STEP & R obtained")
-                ax.legend()
-                fig.savefig(save_path_hist+'/Histogram_R_actions_norm'+str(i_epoch)+'.jpg')
-                
+                    fig, ax = plt.subplots()
+                    p = ax.bar(x,y1, width, label='Epoch '+str(i_epoch))
+                    ax.bar_label(p, label_type='center')
+                    ax.set_title("Actions saved in memory in epoch "+str(i_epoch))
+                    ax.set_ylabel("Action counts")
+                    ax.set_xlabel("Action")
+                    ax.legend()
+                    fig.savefig(save_path_hist+'/Histogram_actions_'+str(i_epoch)+'.jpg')
+                    
+                    fig, ax = plt.subplots()
+                    p = ax.bar(x,y1_norm, width, label='Epoch '+str(i_epoch))
+                    ax.bar_label(p, label_type='center')
+                    ax.set_title("Actions saved in memory (sum to one) in epoch "+str(i_epoch))
+                    ax.set_ylabel("Instances")
+                    ax.set_xlabel("Action")
+                    ax.legend()
+                    fig.savefig(save_path_hist+'/Histogram_actions_norm'+str(i_epoch)+'.jpg')
+                    
+                    first_no_action_idx = np.where(action_batch[:,0]==5)[0]
+                    first_action_idx = np.where(action_batch[:,0]!=5)[0]
+                    G_no_action = G[first_no_action_idx]
+                    G_action = G[first_action_idx]
+                    
+                    x = ('NAC','NAI','AC','AI') 
+                    NAC = sum(map(lambda i: i == 0, G_no_action))
+                    NAI = sum(map(lambda i: i != 0, G_no_action))
+                    AC = sum(map(lambda i: i == 0, G_action))
+                    AI =sum(map(lambda i: i != 0, G_action))
+                    
+                    total_G = NAC + NAI + AC + AI 
+                    
+                    NAC_NORM = NAC / total_G
+                    NAI_NORM = NAI / total_G
+                    AC_NORM = AC / total_G
+                    AI_NORM = AI / total_G
+                    
+                    fig, ax = plt.subplots()
+                    p = ax.bar(x,[NAC,NAI,AC,AI], width, label='Epoch '+str(i_epoch))
+                    ax.bar_label(p, label_type='center')
+                    ax.set_title("Grouping according to G obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
+                    ax.set_ylabel("Instances")
+                    ax.set_xlabel(" First action of the N_STEP & G obtained")
+                    ax.legend()
+                    fig.savefig(save_path_hist+'/Histogram_G_actions_'+str(i_epoch)+'.jpg')
+                    
+                    fig, ax = plt.subplots()
+                    p = ax.bar(x,[NAC_NORM,NAI_NORM,AC_NORM,AI_NORM], width, label='Epoch '+str(i_epoch))
+                    ax.bar_label(p, label_type='center')
+                    ax.set_title("Grouping according to G obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
+                    ax.set_ylabel("Instances")
+                    ax.set_xlabel(" First action of the N_STEP & G obtained")
+                    ax.legend()
+                    fig.savefig(save_path_hist+'/Histogram_G_actions_norm'+str(i_epoch)+'.jpg')
+                    
+                    no_action_idx = np.where(action_batch==5)
+                    coordinates_no_action = np.vstack((no_action_idx[0], no_action_idx[1])).T
+                    action_idx = np.where(action_batch!=5)
+                    coordinates_action = np.vstack((action_idx[0], action_idx[1])).T
+                    reward_no_action = []
+                    reward_action = []
+                    # pdb.set_trace()
+                    # Iterar a través de las coordenadas y agregar los valores correspondientes a la lista de valores deseados
+                    for coor in coordinates_no_action:
+                        row, col = coor
+                        reward = reward_batch[row][col]
+                        reward_no_action.append(reward)
+                        
+                    for coor in coordinates_action:
+                        row, col = coor
+                        reward = reward_batch[row][col]
+                        reward_action.append(reward)
+                        
+                        
+                    NAC = sum(map(lambda i: i == 0, reward_no_action))
+                    NAI = sum(map(lambda i: i != 0, reward_no_action))
+                    AC = sum(map(lambda i: i == 0, reward_action))
+                    AI =sum(map(lambda i: i != 0, reward_action))
+                    
+                    total_r = NAC + NAI + AC + AI 
+                    
+                    NAC_NORM = NAC / total_r
+                    NAI_NORM = NAI / total_r
+                    AC_NORM = AC / total_r
+                    AI_NORM = AI / total_r
+                    
+                    fig, ax = plt.subplots()
+                    p = ax.bar(x,[NAC,NAI,AC,AI], width, label='Epoch '+str(i_epoch))
+                    ax.bar_label(p, label_type='center')
+                    ax.set_title("Grouping according to R obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
+                    ax.set_ylabel("Instances")
+                    ax.set_xlabel(" First action of the N_STEP & R obtained")
+                    ax.legend()
+                    fig.savefig(save_path_hist+'/Histogram_R_actions_'+str(i_epoch)+'.jpg')
+                    
+                    fig, ax = plt.subplots()
+                    p = ax.bar(x,[NAC_NORM,NAI_NORM,AC_NORM,AI_NORM], width, label='Epoch '+str(i_epoch))
+                    ax.bar_label(p, label_type='center')
+                    ax.set_title("Grouping according to R obtained based on \nfirst action taken of the N_STEP in epoch "+str(i_epoch))
+                    ax.set_ylabel("Instances")
+                    ax.set_xlabel(" First action of the N_STEP & R obtained")
+                    ax.legend()
+                    fig.savefig(save_path_hist+'/Histogram_R_actions_norm'+str(i_epoch)+'.jpg')
+                    
                 
                 # pdb.set_trace()
                 
@@ -1223,9 +1321,12 @@ while i_epoch < NUM_EPOCH:
                 # pdb.set_trace()
 
 
-            ex_rate.append(EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY))
+            ex_rate.append(max(EPS_END, EPS_START - (EPS_START - EPS_END) * (steps_done / EPS_DECAY)))
 
             total_loss_epoch_train.append(sum(total_loss))
+            total_q_behavioral_train.append(mean(total_q_behavioral))
+            # print(total_q_behavioral)
+            # pdb.set_trace()
             total_reward_epoch_train.append(sum(total_reward))
             total_reward_energy_epoch_train.append(sum(total_reward_energy_ep))
             total_reward_time_epoch_train.append(sum(total_reward_time_ep))
@@ -1281,6 +1382,7 @@ while i_epoch < NUM_EPOCH:
                 total_G_total_epoch_train,
                 total_G_energy_epoch_train,
                 total_G_time_epoch_train,
+                total_q_behavioral_train,
                 ex_rate)
             
             
@@ -1311,6 +1413,7 @@ while i_epoch < NUM_EPOCH:
             # print(len(total_loss))
             # pdb.set_trace()
             total_loss_epoch_val.append(sum(total_loss))
+            # total_q_behavioral_val.append(sum(total_q_behavioral))
             total_reward_epoch_val.append(sum(total_reward))
             total_reward_energy_epoch_val.append(sum(total_reward_energy_ep))
             total_reward_time_epoch_val.append(sum(total_reward_time_ep))
@@ -1368,6 +1471,7 @@ while i_epoch < NUM_EPOCH:
                 total_G_total_epoch_val,
                 total_G_energy_epoch_val,
                 total_G_time_epoch_val)
+                # total_q_behavioral_val)
             
             
             
@@ -1427,8 +1531,9 @@ if PRETRAINED:
 # CONFIG CONFIGURATION FILE 
 file1 = open(path+"/CONFIGURATION.txt","a")
 
-CONFIG_PARAM = [N_STEP,REPLAY_MEMORY,NUM_EPOCH,NUM_EPISODES,BATCH_SIZE,GAMMA,EPS_START,EPS_END,EPS_DECAY,TARGET_UPDATE,LR,POSITIVE_REWARD,NO_ACTION_PROBABILITY,FACTOR_ENERGY_PENALTY,DECISION_RATE, SPEED_ROBOT, TEMPORAL_CTX]
-CONFIG_PARAM_NAME = ["N_STEP","REPLAY_MEMORY","NUM_EPOCH","NUM_EPISODES","BATCH_SIZE","GAMMA","EPS_START","EPS_END","EPS_DECAY","TARGET_UPDATE","LR","POSITIVE_REWARD","NO_ACTION_PROBABILITY","FACTOR_ENERGY_PENALTY","DECISION_RATE", "SPEED","TEMPORAL_CTX"]
+
+CONFIG_PARAM = [N_STEP,REPLAY_MEMORY,LSTM,PRIORITAZED_MEMORY,NUM_EPOCH,NUM_EPISODES,BATCH_SIZE,GAMMA,EPS_START,EPS_END,EPS_DECAY,TARGET_UPDATE,LR,POSITIVE_REWARD,NO_ACTION_PROBABILITY,FACTOR_ENERGY_PENALTY,DECISION_RATE, SPEED_ROBOT, TEMPORAL_CTX]
+CONFIG_PARAM_NAME = ["N_STEP","REPLAY_MEMORY","LSTM","PRIORITAZED_MEMORY","NUM_EPOCH","NUM_EPISODES","BATCH_SIZE","GAMMA","EPS_START","EPS_END","EPS_DECAY","TARGET_UPDATE","LR","POSITIVE_REWARD","NO_ACTION_PROBABILITY","FACTOR_ENERGY_PENALTY","DECISION_RATE", "SPEED","TEMPORAL_CTX"]
 for idx,conf in enumerate(CONFIG_PARAM):
     file1.write(CONFIG_PARAM_NAME[idx]+": ")
     file1.write(str(conf)+', ')
