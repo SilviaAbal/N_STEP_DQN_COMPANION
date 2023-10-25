@@ -31,6 +31,7 @@ import warnings
 from scipy.special import softmax
 
 
+
 warnings.filterwarnings("ignore")
 
 parser = argparse.ArgumentParser()
@@ -448,7 +449,7 @@ def select_action(state,hidden_train,hidden_val,phase):
                           hidden_train=(hidden_train[0,:][None,:].contiguous(),hidden_train[1,:][None,:].contiguous())
                      else:
                          out, hidden_train = policy_net(state, hidden_train)
-
+                     # pdb.set_trace()
                  else:
                      out = policy_net(state)
                  # print(out)
@@ -838,19 +839,22 @@ while i_epoch < NUM_EPOCH:
             
             if LSTM:
                 if device.type == 'cuda':
-                    hidden = (torch.randn(1,hidden_size_LSTM).cuda(),
-                              torch.randn(1,hidden_size_LSTM).cuda())
+                    # hidden = (torch.randn(1,hidden_size_LSTM).cuda(),
+                    #           torch.randn(1,hidden_size_LSTM).cuda())
+                    hidden = (torch.zeros(1,hidden_size_LSTM).cuda(),
+                                        torch.zeros(1,hidden_size_LSTM).cuda())
                 else:
                     hidden = (torch.randn(hidden_size_LSTM),
                               torch.randn(hidden_size_LSTM))
-                hidden_train = hidden
-                hidden_val = hidden 
+                hidden_train = copy.deepcopy(hidden)
+                hidden_val = copy.deepcopy(hidden)
             # print('estamos en phase: ',phase)
             for t in count(): 
                 # print(t)
                 decision_cont += 1
                 if LSTM:
-                   n_hidden = hidden
+                   n_hidden = copy.deepcopy(hidden)
+                   # print(n_hidden)
                    if phase == 'train':
                         hidden_train = n_hidden 
                    else:
@@ -897,10 +901,12 @@ while i_epoch < NUM_EPOCH:
                 if flag_decision:
                     reward = torch.tensor([reward], device=device)
                     if LSTM: 
+                        # print("******************\n ",n_hidden)
                         if IMPORTANCE_SAMPLING:
                             data = [decision_state, action_,reward, imp_sampling,n_hidden]
                         else:
                             data = [decision_state, action_,reward,n_hidden]
+                        # pdb.set_trace()
                     else:
                         if IMPORTANCE_SAMPLING:
                             data = [decision_state, action_,reward, imp_sampling]
