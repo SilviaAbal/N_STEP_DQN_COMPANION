@@ -6,9 +6,11 @@ import torch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training config
-LR = 1e-3
+FOLDS = ['fold'+str(i)+'_test.txt' for i in range(1,6)]
+HIDDEN_SIZE_LSTM = 512
+LR = 1e-4
 EPOCHS = 1
-NUM_EPISODES = 10000
+NUM_EPISODES = 30000
 BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 0.99
@@ -66,6 +68,7 @@ ANNOTATIONS_DIM = 110 # the number of features from gaze
 VIDEO_FPS = 30
 DECISION_RATE = 30 
 ROBOT_ATOMIC_ACTIONS = [8, 12, 13, 14, 15]
+
 ASR_PENALTY = 3.5*VIDEO_FPS # 3.5 seconds expressed as frames
 FACTOR_ENERGY_PENALTY = 0.1
 IMPOSSIBLE_ACTION_PENALTY = 10
@@ -73,3 +76,7 @@ IMPOSSIBLE_ACTION_PENALTY = 10
 INTERACTIVE_OBJECTS_ROBOT = ['butter','jam','milk','nutella','tomato sauce']
 NUM_ROBOT_ACTIONS = len(ROBOT_ACTIONS_MEANINGS)
 NUM_OBJECTS = len(OBJECTS_MEANINGS)
+
+# robot times modeled as gaussian
+ROBOT_TIME_BETA = 1
+ROBOT_PROB_FAILURE = 0

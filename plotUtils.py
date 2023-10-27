@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 from scipy import signal
+import numpy as np
 
 def plotEpisodeStats( st, epoch, epi):
     
@@ -68,4 +69,25 @@ def plotHelper( xData, yData, xLabel, yLabel, title, filePath, addLPF=False):
     ax.set_title(title)
 
     fig.savefig(filePath)
+    return
+
+def plotHelper2( yData1, yData2, xLabel, yLabel, title, legend, recipeNames, filePath):
+
+    xData = range(len(yData1))
+    fig, ax = plt.subplots(figsize=(21,4))
+
+    label1 = legend[0]+' = %.2f' %(np.mean(yData1))
+    label2 = legend[1]+' = %.2f' %(np.mean(yData2))
+
+    ax.plot(xData, yData1, 'b', label=label1)
+    ax.plot(xData, yData2, 'r', label=label2)
+    ax.legend()
+
+    ax.set_xlabel(xLabel)
+    ax.set_ylabel(yLabel)
+    ax.set_title(title)
+    ax.set_xticks(xData)
+    ax.set_xticklabels(recipeNames, rotation=90)
+
+    fig.savefig(filePath, bbox_inches="tight")
     return

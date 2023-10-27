@@ -2,6 +2,7 @@ import copy
 import os
 import sys
 import glob
+import random
 
 import gym
 from gym import error, spaces, utils
@@ -53,6 +54,7 @@ class Episode():
     
         
         self.folderPath = folderPath
+        self.folderName = folderPath[folderPath.rfind('/')+1::]
         self.labelsPath = labelsPath
         self.robotAtomicActions = robotAtomicActions
         self.videoFPS = videoFPS
@@ -287,14 +289,11 @@ class Episode():
                 label.set_y(-0.3)
 
         # Save the timeline as a PNG image
-        folderName = self.folderPath[self.folderPath.rfind('/')+1::]
-        ax.set_title(folderName)
-        imName = 'figs/recipes/' + folderName + '.png'
+        ax.set_title(self.folderName)
+        imName = 'figs/recipes/' + self.folderName + '.png'
         plt.savefig(imName, bbox_inches='tight', dpi=300)
         #plt.show()
         return
-  
-    
 
 class SimulatedEnv(gym.Env):
 
@@ -703,9 +702,16 @@ class SimulatedEnv(gym.Env):
         # Modeled following a gaussian distribution as stated in the ROBIO paper
         # in the paper it also accounts for robot mistakes
         
-        # for now, we don't use the gaussian strategy, just take the mean from cfg
-        
-        return cfg.ROBOT_AVERAGE_DURATIONS[object]
+        beta = cfg.ROBOT_TIME_BETA
+        probFail = cfg.ROBOT_PROB_FAILURE
+        humanTime = cfg.ROBOT_AVERAGE_DURATIONS[object]
+        failed = random.random() < probFail
+
+        mu = beta*(humanTime + failed*(0.5*humanTime))
+        std = 0.2*mu
+
+        time = int(random.gauss(mu,std))
+        return time
 
     def computeHumanTime(self, object):
 
@@ -718,75 +724,6 @@ class SimulatedEnv(gym.Env):
         return
     
 
-def get_possibility_objects_in_table (annot):
-        """
-        Function that extracts from the video (annotations) the actions that the robot must do and when 
-        it can do them. It returns a dataframe indicating "object", "in table", "frame_init" and "frame_end". 
-        On the one hand, "object" indicates the object involved in the action, "in table" refers to the action 
-        to be performed; "in table" = 1 corresponds to taking the object and "in table"= 0 corresponds to letting 
-        it in the fridge. All the scenarios in the videos start with the objects in the fridge. On the other hand, 
-        "frame_init" and "frame_end" denote when the action can start and when it can end. It could start later than 
-        frame_init as long as it does not exceed frame_end, otherwise it will make the person wait, it is a possible 
-        and considered case, but undesired (it will have time penalty).
-
-        Parameters
-        ----------
-        annot : DataFrame
-            Contains video annotations.
-
-        Returns
-        -------
-        df_video: DataFrame
-            Contains the actions that the robot must do and when 
-            it can do them.
-        """
-        person_states = annot['label']
-        objects_video = []
-        in_table_video = []
-        fr_init_video = []
-        fr_end_video = []
-        index_annotation = []
-
-        for idx,value in enumerate(person_states):
-            for obj in cfg.INTERACTIVE_OBJECTS_ROBOT:
-                if obj in cfg.ATOMIC_ACTIONS_MEANINGS[value]:
-                    if 'extract' in cfg.ATOMIC_ACTIONS_MEANINGS[value]:
-                        objects_video.append(obj)
-                        in_table_video.append(1)
-                        fr_init_video.append(0)
-                        fr_end_video.append(annot['frame_init'][idx])
-                        index_annotation.append(idx)
-
-        video_bring = {"Object": objects_video, "In table": in_table_video, "Frame init": fr_init_video,"Frame end": fr_end_video, "Index": index_annotation}
-
-        res = all(ele == [] for ele in list(video_bring.values())) #check if video bring is empty
-        if res == False:
-            df_bring = pd.DataFrame(video_bring)
-            # tengo que cerar
-            for idx,value in enumerate(person_states):
-                for obj in cfg.INTERACTIVE_OBJECTS_ROBOT:
-                    if obj in cfg.ATOMIC_ACTIONS_MEANINGS[value]:
-                        if 'put' in cfg.ATOMIC_ACTIONS_MEANINGS[value]: ##### esto habria que cambiarlo cuando se le vaya a incorporar put, que no dependa de que haya accion bring
-
-                            df_current_object=df_bring[df_bring["Object"] == obj]
-                            # este caso es distinto
-                            if not df_current_object.empty:
-                                objects_video.append(obj)
-                                in_table_video.append(0)
-                                fr_init_video.append(annot['frame_end'][int(df_current_object['Index'])])
-                                fr_end_video.append(annot['frame_init'][idx])
-
-            data_video =  {"Object": objects_video, "In table": in_table_video, "Frame init": fr_init_video,"Frame end": fr_end_video}
-            df_video = pd.DataFrame(data_video)
-            person_states_print = []
-            for idx,val in enumerate(person_states):
-                person_states_print.append(cfg.ATOMIC_ACTIONS_MEANINGS[val])
-        else:
-            df_video = pd.DataFrame()
-
-        return df_video
-    
-  
 
 if __name__ == '__main__':
 

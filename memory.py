@@ -3,7 +3,7 @@ from collections import namedtuple, deque
 
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
+                        ('pHidden', 'state', 'action', 'tHidden', 'next_state', 'reward'))
 
 
 class ReplayMemory(object):
@@ -31,9 +31,9 @@ class ReplayMemory(object):
 
 if __name__ == '__main__':
 
-    t1 = Transition(0, 'a', 1, -1)
-    t2 = Transition(1, 'b', 2, -1)
-    t3 = Transition(1, 'c', 2,  0)
+    t1 = Transition(-1, 0, 'a', -2, 1, -1)
+    t2 = Transition(-2, 1, 'b', -2, 2, -1)
+    t3 = Transition(-3, 1, 'c', -3, 2,  0)
 
     rm = ReplayMemory(3)
     rm.push(*t1)
