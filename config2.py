@@ -12,7 +12,7 @@ LR = 1e-4
 EPOCHS = 1
 NUM_EPISODES = 30000
 BATCH_SIZE = 128
-GAMMA = 0.99
+GAMMA = 0.9
 EPS_START = 0.99
 EPS_END = 0.1
 EPS_DECAY = 5e4
@@ -30,12 +30,16 @@ ROBOT_ACTIONS_MEANINGS = {
 ROBOT_ACTIONS_2_OBJECTS = {
     0: 'butter', 1: 'jam', 2: 'milk', 3: 'nutella', 4: 'tomato sauce', 5: 'do nothing',
     }
+ROBOT_OBJECTS_2_ACTIONS = {v:k for k,v in ROBOT_ACTIONS_2_OBJECTS.items()}
 
 ROBOT_AVERAGE_DURATIONS = {
  	0: 174, 1: 198, 2: 186, 3: 234, 4: 270, 5: 0,
     'butter': 174, 'jam': 198, 'milk': 186, 'nutella': 234, 'tomato sauce': 270, 'do nothing': 0, 
     }
 
+HUMAN_ACTIONS_2_OBJECTS = {
+    1: 'milk', 16:'butter', 17:'jam', 18:'tomato sauce', 19:'nutella', 25: 'milk',
+}
 
 ATOMIC_ACTIONS_MEANINGS = {
 	0: 'other manipulation', 1: 'pour milk', 2: 'pour water', 3: 'pour coffee', 4: 'pour Nesquik', 5: 'pour sugar',	6: 'put microwave',
@@ -67,7 +71,8 @@ ANNOTATIONS_FPS = 5
 ANNOTATIONS_DIM = 110 # the number of features from gaze
 VIDEO_FPS = 30
 DECISION_RATE = 30 
-ROBOT_ATOMIC_ACTIONS = [8, 12, 13, 14, 15]
+ROBOT_NEEDED_FOR_ACTIONS = [1, 16, 17, 18, 19, 25]
+ACTIONS_TO_REMOVE_FROM_RECIPES = [8, 12, 13, 14, 15]
 
 ASR_PENALTY = 3.5*VIDEO_FPS # 3.5 seconds expressed as frames
 FACTOR_ENERGY_PENALTY = 0.1

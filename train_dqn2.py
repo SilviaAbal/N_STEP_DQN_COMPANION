@@ -319,6 +319,8 @@ def train(epoch, exp):
             st.add(epoch, epi,t,'episode_durations', t)
             st.add(epoch, epi,t,'episode_delay', env.episode.delay)
             st.add(epoch, epi,t,'episode_name', env.episode.folderName)
+            st.add(epoch, epi,t,'reactive_time', env.episode.reactiveTime)
+            st.add(epoch, epi,t,'min_delay', env.episode.minDelay)
 
             # 3.8 check if the episode is finished
             if done:    
@@ -368,6 +370,8 @@ def test( epoch, exp, env, st):
             st.add(epoch, epi,t,'episode_durations', t)
             st.add(epoch, epi,t,'episode_delay', env.episode.delay)
             st.add(epoch, epi,t,'episode_name', env.episode.folderName)
+            st.add(epoch, epi,t,'reactive_time', env.episode.reactiveTime)
+            st.add(epoch, epi,t,'min_delay', env.episode.minDelay)
 
             # 3.8 check if the episode is finished
             if done:    
@@ -502,16 +506,18 @@ def saveAndVisualize(cfg, exp):
     print("Saving and visualizing results")
     
     # 1 - Get all recipe names alfabetically sorted
-    rewardVal, rewardTest, _ = _recoverKFoldStat(cfg, exp, 'instant_reward', func='sum', reduction=True)
+    rewardVal, rewardTest, recipeNames = _recoverKFoldStat(cfg, exp, 'instant_reward', func='sum', reduction=True)
     aTakenVal, aTakenTest, _ = _recoverKFoldStat(cfg, exp, 'actions_taken', func='notIdleActions', reduction=True)
-    delayVal, delayTest, recipeNames = _recoverKFoldStat(cfg, exp, 'episode_delay', func='last', reduction=True)
+    delayVal, delayTest, _ = _recoverKFoldStat(cfg, exp, 'episode_delay', func='last', reduction=True)
+    reactiveTimes, _, _ = _recoverKFoldStat(cfg, exp, 'reactive_time', func='last', reduction=True)
+    minDelays, _, _ = _recoverKFoldStat(cfg, exp, 'min_delay', func='last', reduction=True)
 
     plotHelper2(rewardVal, rewardTest, '#recipe', 'reward', 'total reward per recipe', 
                 ['val', 'test'], recipeNames, 'figs/allFolds/total_reward.png')
     plotHelper2(aTakenVal, aTakenTest, '#recipe', '#actions', 'total actions taken (!=5) per recipe', 
                 ['val', 'test'], recipeNames, 'figs/allFolds/actions_taken.png')
     plotHelper2(delayVal, delayTest, '#recipe', 'delay (frames)', 'total delay per per recipe', 
-                ['val', 'test'], recipeNames, 'figs/allFolds/delay.png')
+                ['val', 'test', 'reacTime', 'oracle'], recipeNames, 'figs/allFolds/delay.png', reactiveTimes, minDelays)
     
     # save all the recipes (test) to visualize the kind of actions the robot took
     for k in exp.keys():

@@ -71,7 +71,7 @@ def plotHelper( xData, yData, xLabel, yLabel, title, filePath, addLPF=False):
     fig.savefig(filePath)
     return
 
-def plotHelper2( yData1, yData2, xLabel, yLabel, title, legend, recipeNames, filePath):
+def plotHelper2( yData1, yData2, xLabel, yLabel, title, legend, recipeNames, filePath, yData3=None, yData4=None):
 
     xData = range(len(yData1))
     fig, ax = plt.subplots(figsize=(21,4))
@@ -81,6 +81,15 @@ def plotHelper2( yData1, yData2, xLabel, yLabel, title, legend, recipeNames, fil
 
     ax.plot(xData, yData1, 'b', label=label1)
     ax.plot(xData, yData2, 'r', label=label2)
+
+    if yData3 is not None:
+        label3 = legend[2]+' = %.2f' %(np.mean(yData3))
+        ax.plot(xData, yData3, color='green', linestyle='--', label=label3)
+
+    if yData4 is not None:
+        label4 = legend[3]+' = %.2f' %(np.mean(yData4))
+        ax.plot(xData, yData4, color='purple', linestyle='--', label=label4)
+
     ax.legend()
 
     ax.set_xlabel(xLabel)

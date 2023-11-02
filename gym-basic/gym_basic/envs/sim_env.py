@@ -49,27 +49,30 @@ class AtomicAction():
     
 class Episode():
 
-    def __init__(self, folderPath, labelsPath, robotAtomicActions,
+    def __init__(self, folderPath, labelsPath, actions2Remove, robotNeededActions,
                  videoFPS, featFPS, selFeat):
     
         
         self.folderPath = folderPath
         self.folderName = folderPath[folderPath.rfind('/')+1::]
         self.labelsPath = labelsPath
-        self.robotAtomicActions = robotAtomicActions
+        self.actions2Remove = actions2Remove
+        self.robotNeededActions = robotNeededActions
         self.videoFPS = videoFPS
         self.featFPS = featFPS
         self.selFeat = range(selFeat)
-
         self.atomicActions = []
-        self.actionsTaken = {}
         self.frameFeatures = None 
         self.lastFrame = None
+        self.reactiveTime = 0
+        self.minDelay = 0
 
+        # attributes that must be reset each time the episode starts
         self.currentFrame = 0
         self.delay = 0
         self.terminated = True
         self.truncated = True
+        self.actionsTaken = {}
 
         # load the episode info
         self.loadEpisode()
@@ -170,28 +173,7 @@ class Episode():
 
     def loadEpisode(self):
 
-        # 1 - Read labels
-        pandasDF = np.load(self.labelsPath, allow_pickle=True)
-        #print(pandasDF)
-
-        # 2 - Fill atomic actions
-        for index, row in pandasDF.iterrows():
-
-            # read pandas row
-            actionIndex = row.label
-            objectsIndex = row.label_obj
-            frameInit  = row.frame_init
-            frameEnd   = row.frame_end
-            requiresRobot = row.label in self.robotAtomicActions
-
-            objectNeeded = [ obj[0] for obj in objectsIndex if obj != [8] ]
-            requiredObj = cfg.OBJECTS_MEANINGS[objectNeeded[0]] if requiresRobot else None
-
-            # create the atomic action and add it to the episode
-            self.atomicActions.append(AtomicAction(index, actionIndex, objectsIndex, 
-                frameInit, frameEnd, requiresRobot, requiredObj))
-
-        # 3 - Read frames (action)
+        # 1 - Read frame features
         framePathsList = sorted(glob.glob(os.path.join(self.folderPath, 'frame_*')))
         self.frameFeatures = np.zeros( (len(framePathsList), len(self.selFeat)), dtype=np.float32 )
 
@@ -200,10 +182,44 @@ class Episode():
             fFeat = np.load(framePath, allow_pickle=True)['data']
             self.frameFeatures[i,:] = fFeat[self.selFeat]
 
-        # 4 - Finally, replicate the features to account for the difference between 
+        # 2 - Replicate the features to account for the difference between 
         # the featFPS and the videoFPS
         replicateFactor = self.videoFPS / self.featFPS
         self.frameFeatures = np.repeat(self.frameFeatures, replicateFactor, axis=0)
+
+        # 3 - Read labels
+        pandasDF = np.load(self.labelsPath, allow_pickle=True)
+        #print(pandasDF)
+
+        # 4 - Fill atomic actions
+        keep = np.full(self.frameFeatures.shape[0], True, dtype=bool)
+        offset, numAc = 0,0
+        for index, row in pandasDF.iterrows():
+
+            # read pandas row
+            actionIndex  = row.label
+            objectsIndex = row.label_obj
+            frameInit    = row.frame_init
+            frameEnd     = row.frame_end
+
+            duration       = frameEnd - frameInit
+            requiresRobot  = row.label in self.robotNeededActions
+            actionToRemove = row.label in self.actions2Remove
+
+            if actionToRemove:
+                offset += duration
+                keep[frameInit:frameEnd] = False
+                continue
+
+            requiredObj = cfg.HUMAN_ACTIONS_2_OBJECTS[actionIndex] if requiresRobot else None
+
+            # create the atomic action and add it to the episode
+            self.atomicActions.append(AtomicAction(numAc, actionIndex, objectsIndex, 
+                frameInit-offset, frameEnd-offset, requiresRobot, requiredObj))
+            numAc += 1
+
+        # Finally, remove the frames that belong to self.actions2Remove
+        self.frameFeatures = self.frameFeatures[keep]
         self.lastFrame = self.frameFeatures.shape[0]-1
         return
 
@@ -211,7 +227,7 @@ class Episode():
 
         print("EPISODE INFO")
         print("\tFolder path %s" %self.folderPath)
-        print("\tActions that the robot is supposed to do: ", self.robotAtomicActions)
+        print("\tHuman actions that needs robot: ", self.robotNeededActions)
         print("\tCurrent frame in the episode %d" %(self.currentFrame) )
         print("\nAtomic actions: ")
 
@@ -333,10 +349,7 @@ class SimulatedEnv(gym.Env):
         self.episode = None  
         self.oit = copy.deepcopy(cfg.OBJECTS_INIT_STATE)
         
-        # 2 - read episodes
-        self.loadEpisodes()
-
-        # 3 - set action and observation spaces
+        # 2 - set action and observation spaces
         stateDims = cfg.ANNOTATIONS_DIM + len(cfg.OBJECTS_INIT_STATE)
         self.stateDims = stateDims
         low = -np.inf * np.ones(stateDims)
@@ -345,6 +358,57 @@ class SimulatedEnv(gym.Env):
         self.action_space = spaces.Discrete(cfg.NUM_ROBOT_ACTIONS)
         self.observation_space = spaces.Box(low = low, high = high, dtype=np.float32)
 
+        # 3 - read episodes
+        self.loadEpisodes()
+        self.computeEpisodesReactiveTime()
+        self.computeEpisodesMinDelay()
+        return
+    
+    def computeEpisodesReactiveTime(self):
+
+        """
+        This function computes the times necessary for a recipe to be completed
+        under a reactive robot (a robot that only acts via ASR)
+        """
+        for i in range(self.numEpisodes):
+            
+            self.reset()
+            while self.episode.terminated is False:
+                self.step(5)
+
+            self.episode.reactiveTime = self.episode.delay
+            self.episode.reset()
+        
+        return
+    
+    def computeEpisodesMinDelay(self):
+
+        """
+        This function computes for each episode, the minimun delay the robot can 
+        cause. Note that this might change on each iteration given that the times
+        taken by the robot are stochastic. 
+        """
+        for i in range(self.numEpisodes):
+
+            self.reset()
+            requiredActions = []
+
+            # find the necessary actions to be taken
+            for ac_i in self.episode.atomicActions:
+                if ac_i.requiresRobot:
+                    requiredActions.append(cfg.ROBOT_OBJECTS_2_ACTIONS[ac_i.requiredObj])
+
+            # now, take the actions
+            while len(requiredActions) > 0:
+                action = requiredActions.pop(0)
+                self.step(action)
+
+            # do nothing for the rest of the episode
+            while self.episode.terminated is False:
+                self.step(5)
+
+            self.episode.minDelay = self.episode.delay
+            self.episode.reset()
 
         return
     
@@ -366,8 +430,9 @@ class SimulatedEnv(gym.Env):
         for f in folders:
 
             labelsPath = os.path.join(f, cfg.LABELS_FILE_NAME)
-            e.append( Episode(f, labelsPath, cfg.ROBOT_ATOMIC_ACTIONS, 
-                cfg.VIDEO_FPS, cfg.ANNOTATIONS_FPS, cfg.ANNOTATIONS_DIM))
+            e.append( Episode(f, labelsPath, cfg.ACTIONS_TO_REMOVE_FROM_RECIPES, 
+                cfg.ROBOT_NEEDED_FOR_ACTIONS, cfg.VIDEO_FPS, cfg.ANNOTATIONS_FPS, 
+                cfg.ANNOTATIONS_DIM))
 
         self.numEpisodes = len(e)
         self.allEpisodes = cycle(e)
@@ -486,19 +551,22 @@ class SimulatedEnv(gym.Env):
                     ASR = True)
                 self.oit[ac.requiredObj] = 1
 
-            # advance to end of needRobot ac
-            self.episode.advanceTo(ac.frameEnd)
+                # advance to start of need robot ASR
+                self.episode.advanceTo(ac.frameInit)
             
+            else:
+                # the necessary object was on the table, thus, advance frames normally
+                self.episode.skipFrames(cfg.DECISION_RATE)
+
         else:
 
             if cfg.ENV_VERBOSE: 
                 print("\tStill time til next robot action")
 
-            self.episode.advanceTo(self.episode.currentFrame + cfg.DECISION_RATE)
+            self.episode.skipFrames(cfg.DECISION_RATE)
             
         # compute nextState
         nextState = self.buildState()
-
         return timeReward, energyReward, reward, nextState
     
     def stepAction(self, action):
@@ -515,6 +583,7 @@ class SimulatedEnv(gym.Env):
         ac = self.episode.findNextRobotAction()
 
         # robot action ends before the next frame where the human needs the robot
+        # or robot took action after last need robot atomic action event (ac.frameInit = inf)
         if robotActionEnds < ac.frameInit:
             Rt, Re, R, nextState = self.stepActionInTime(
                 action, framesNeededRobot, robotActionEnds, ac)
@@ -529,10 +598,11 @@ class SimulatedEnv(gym.Env):
     def stepActionInTime(self, action, framesNeededRobot, robotActionEnds, ac):
 
         """
-        This method is called when the robot takes an action that ends before the
-        next human-needs-asistance atomic action. The action might be useful for
-        the recipe, in which case it gets no penalty, or incorrect, in which case
-        it does get penalty
+        This method is called when the robot takes an action that does not cause
+        the human to wait. Maybe because it ends before the next human-needs-asistance 
+        atomic action or because there are no more human-need-assitance moments. 
+        The action might be useful for the recipe, in which case it gets no penalty, 
+        or incorrect, in which case it does get penalty
         """
 
         objTaken = cfg.ROBOT_ACTIONS_2_OBJECTS[action]
@@ -570,8 +640,8 @@ class SimulatedEnv(gym.Env):
                     framesNeeded=framesNeededRobot)
 
         # compute nextState and update table 
-        if self.episode.currentFrame == ac.frameInit:
-            self.episode.advanceTo(ac.frameEnd)
+        #if self.episode.currentFrame == ac.frameInit:
+        #    self.episode.advanceTo(ac.frameEnd)
 
         self.oit[objTaken] = 1
         nextState = self.buildState()
@@ -598,9 +668,9 @@ class SimulatedEnv(gym.Env):
                 if self.oit[ac_i.requiredObj] == 0:
                     acWaiting = ac_i
                     break
-                else: # we skip the needRobot atomic action
-                    robotActionEnds += ac_i.duration
-                    actionFrame += ac_i.duration
+                #else: # we skip the needRobot atomic action
+                #    robotActionEnds += ac_i.duration
+                #    actionFrame += ac_i.duration
 
         if cfg.ENV_VERBOSE:
             print("\tRobot needs %d frames to complete action" %(framesNeededRobot))
@@ -645,7 +715,7 @@ class SimulatedEnv(gym.Env):
             if asr: self.oit[acWaiting.requiredObj] = 1
 
             # move robot to end of needs to wait ac
-            self.episode.advanceTo(acWaiting.frameEnd)
+            self.episode.advanceTo(acWaiting.frameInit)
 
         # update iot and compute next state
         self.oit[objTaken] = 1
@@ -731,14 +801,24 @@ if __name__ == '__main__':
     sys.path.append(root_path)
 
     import config2 as cfg
+    from utils import readTestTxt
 
     mode = 'train'
     testFile = "fold1_test.txt"
     
-    env = SimulatedEnv(mode, testFile)
+    # env = SimulatedEnv(mode, testFile)
+    # state, info = env.reset()
+    # env.episode.currentFrame = 550
+    # env.oit['milk'] = 1
+    # env.oit['nutella'] = 1
+    # env.step(3)
 
-    for i in range(34):
+
+    env = SimulatedEnv(mode, testFile)
+    
+    for i in range(env.numEpisodes):
         state, info = env.reset()
+        print(env.episode.folderName, env.episode.minDelay)
         
     for t in count():
 
@@ -757,6 +837,18 @@ if __name__ == '__main__':
 
     
 
+
+    # dbFolder = os.path.join(cfg.ANNOTATIONS_FOLDER, cfg.DATASET_NAME)
+    # allFolders  = sorted(glob.glob(dbFolder+"/*"))
+    
+    # for f in allFolders:
+    
+    #     labelsPath = os.path.join(f, cfg.LABELS_FILE_NAME)
+
+    #     e = Episode(f, labelsPath, cfg.ACTIONS_TO_REMOVE_FROM_RECIPES, cfg.ROBOT_NEEDED_FOR_ACTIONS,
+    #             cfg.VIDEO_FPS, cfg.ANNOTATIONS_FPS, cfg.ANNOTATIONS_DIM)
+    #     #e.visualizeAndSave()
+    #     print(e)
 
 
 
