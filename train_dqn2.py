@@ -447,6 +447,10 @@ def initExperiment(cfg, fold):
     # 2 - Initialize DQN networks, optimizer and loss function
     policyNet = DQN_LSTM_LateFusion(state_dimensionality, cfg.HIDDEN_SIZE_LSTM, num_actions).to(cfg.DEVICE)
     targetNet = DQN_LSTM_LateFusion(state_dimensionality, cfg.HIDDEN_SIZE_LSTM, num_actions).to(cfg.DEVICE)
+
+    #policyNet = DQN_MLP(state_dimensionality,  num_actions).to(cfg.DEVICE)
+    #targetNet = DQN_MLP(state_dimensionality, num_actions).to(cfg.DEVICE)
+
     targetNet.load_state_dict(policyNet.state_dict())
 
     optimizer = optim.AdamW(policyNet.parameters(), lr = cfg.LR, amsgrad=True) 

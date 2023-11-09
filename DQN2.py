@@ -135,12 +135,27 @@ class DQN_MLP(nn.Module):
         self.layer2 = nn.Linear(128, 128)
         self.layer3 = nn.Linear(128, n_actions)
 
+        # hidden and prevHidden are not used in this model, they are here just
+        # for compatibility reasons with the rest of the code
+        self.hidden = (torch.zeros(1,1).to(cfg.DEVICE),
+                       torch.zeros(1,1).to(cfg.DEVICE))
+        self.prevHidden = self.hidden
+        return
+
+    def resetHidden(self):
+
+        self.hidden = (torch.zeros(1,1).to(cfg.DEVICE),
+                       torch.zeros(1,1).to(cfg.DEVICE))
+        return
+    
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
-    def forward(self, x):
+    # hidden is only here for compatibility reasons
+    def forward(self, x, hidden=None):
         x = F.relu(self.layer1(x))
         x = F.relu(self.layer2(x))
-        return self.layer3(x)
+        
+        return self.layer3(x), self.hidden
 
 
 if __name__ == '__main__':

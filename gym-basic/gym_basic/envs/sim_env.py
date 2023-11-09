@@ -377,7 +377,7 @@ class SimulatedEnv(gym.Env):
                 self.step(5)
 
             self.episode.reactiveTime = self.episode.delay
-            self.episode.reset()
+            #self.episode.reset()
         
         return
     
@@ -408,7 +408,7 @@ class SimulatedEnv(gym.Env):
                 self.step(5)
 
             self.episode.minDelay = self.episode.delay
-            self.episode.reset()
+            #self.episode.reset()
 
         return
     
@@ -452,7 +452,22 @@ class SimulatedEnv(gym.Env):
         else:
             return self.oit[objTaken] == 1    
 
-    def buildState(self):
+    def buildState(self, randomDelay=30):
+
+        # the random delay is there to avoid always taking the same
+        # frames, either the 0 frame or the same exact reward instants.
+        # Pass 0 if you want to avoid this random delay
+        delay = random.randint(0, randomDelay)
+
+        # we need to check that the delay doesn't cause the time to advance
+        # beyond an ASR event
+        futureTime = self.episode.currentFrame + delay
+        ac = self.episode.findNextRobotAction()
+        maxTime = min(futureTime, ac.frameInit)
+
+        self.episode.advanceTo(maxTime)
+        #self.episode.skipFrames(delay)
+        if cfg.ENV_VERBOSE: print("\t\tRandom delay = %d" %delay)
 
         feat = self.episode.frameFeatures[self.episode.currentFrame]
         oit = np.array(list(self.oit.values()), dtype=np.float32)
@@ -566,7 +581,7 @@ class SimulatedEnv(gym.Env):
             self.episode.skipFrames(cfg.DECISION_RATE)
             
         # compute nextState
-        nextState = self.buildState()
+        nextState = self.buildState(randomDelay=0)
         return timeReward, energyReward, reward, nextState
     
     def stepAction(self, action):
@@ -816,10 +831,11 @@ if __name__ == '__main__':
 
     env = SimulatedEnv(mode, testFile)
     
-    for i in range(env.numEpisodes):
-        state, info = env.reset()
-        print(env.episode.folderName, env.episode.minDelay)
-        
+    #for i in range(env.numEpisodes):
+    #    state, info = env.reset()
+    #    print(env.episode.folderName, env.episode.minDelay)
+    
+    env.reset()
     for t in count():
 
         action = int(input("Enter an action: "))
