@@ -19,9 +19,7 @@ import numpy as np
 from DQN2 import DQN_MLP, DQN_LSTM_LateFusion
 from statTracker import StatTracker
 from memory import ReplayMemory, Transition
-from plotUtils import plotEpisodeStats, plotEpochStats, plotHelper2
-
-
+from plotUtils import plotEpisodeStats, plotEpochStats, plotHelper2, plotHelper3
 
 
 def selectAction(state, exp, test=False):
@@ -242,11 +240,6 @@ def updateTargetNet( exp ):
 def stepTest(exp, action, epoch, epi, ti, env, st):
 
     cfg = exp['cfg']
-    
-    # G is the inmediate discounted n_step reward: 
-    # Rt+1 + gamma*Rt+2 + gamma^2*Rt+3 ...
-    G = 0
-    t = 0
     actionsTaken = {}
 
     # take the action
@@ -254,8 +247,7 @@ def stepTest(exp, action, epoch, epi, ti, env, st):
     observation, reward, terminated, truncated, _ = env.step(action)
 
     exp['stepsDone'] += 1
-    t += 1
-    G += reward
+    t = 1
     
     # check if the last n_step ended on a terminal state
     if terminated:
@@ -270,6 +262,8 @@ def stepTest(exp, action, epoch, epi, ti, env, st):
 
 def train(epoch, exp):
 
+    print('Training epoch {%d/%d}' %(epoch+1, exp['cfg'].EPOCHS))
+
     env = exp['env']
     st  = exp['statTracker']
     cfg = exp['cfg']
@@ -277,7 +271,7 @@ def train(epoch, exp):
     policyNet = exp['policyNet']
     targetNet = exp['targetNet']
 
-    for epi in range(cfg.NUM_EPISODES):
+    for epi in range(env.numEpisodes):
 
         # 0 - reset the initial hidden states of the models
         policyNet.resetHidden()
@@ -324,17 +318,20 @@ def train(epoch, exp):
 
             # 3.8 check if the episode is finished
             if done:    
-                print("Episode %d, delay %d" %(epi, env.episode.delay))
+                #print("Episode %d, delay %d" %(epi, env.episode.delay))
                 env.episode.storeActionsTaken(epoch, epi, st)
                 break
         
         # the episode is finished, let's plot stuff
         # plotEpisodeStats(st, epoch, epi)
 
-    plotEpochStats(st, epoch)
+    # we can also plot stats for this epoch 
+    #plotEpochStats(st, epoch)
     return
 
 def test( epoch, exp, env, st):
+
+    print('\tTest epoch {%d/%d}' %(epoch+1, exp['cfg'].EPOCHS))
 
     cfg = exp['cfg']
     policyNet = exp['policyNet']
@@ -356,8 +353,8 @@ def test( epoch, exp, env, st):
             action, pHidden, epsTh = selectAction(state, exp, test=True)
 
             # 3.2 take the step
-            (nextState, reward, done, stepsTaken) = stepTest(exp, action.item(), epoch, epi, t, env, st)
-            t += stepsTaken
+            (nextState, reward, done, _) = stepTest(exp, action.item(), epoch, epi, t, env, st)
+            t += 1
 
             # 3.4 move to the next state
             state = nextState
@@ -375,7 +372,7 @@ def test( epoch, exp, env, st):
 
             # 3.8 check if the episode is finished
             if done:    
-                print("Episode %d, delay %d" %(epi, env.episode.delay))
+                #print("Episode %d, delay %d" %(epi, env.episode.delay))
                 env.episode.storeActionsTaken(epoch, epi, st)
                 break
 
@@ -388,47 +385,6 @@ def loadConfiguration():
     
     print("\tDone!")
     return cfg
-
-def initExperimentBackup(cfg):
-    
-    print("Initializing experiment variables...")
-
-    
-    # 1 - Initialize enviroment
-    #env = gym.make("gym_basic:basic-v0", display = cfg.ENV_DISPLAY, disable_env_checker = cfg.DISABLE_ENV_CHECKER)
-    env = gym.make("gym_basic:basic-v1", mode='train', testFile='fold1_test.txt')
-    #env = gym.make('CartPole-v1')
-    num_actions = env.action_space.n
-    state, info = env.reset()
-    state_dimensionality = len(state)
-    stepsDone = 0
-
-    # 2 - Initialize DQN networks, optimizer and loss function
-    policyNet = DQN_LSTM_LateFusion(state_dimensionality, cfg.HIDDEN_SIZE_LSTM, num_actions).to(cfg.DEVICE)
-    targetNet = DQN_LSTM_LateFusion(state_dimensionality, cfg.HIDDEN_SIZE_LSTM, num_actions).to(cfg.DEVICE)
-    targetNet.load_state_dict(policyNet.state_dict())
-
-    optimizer = optim.AdamW(policyNet.parameters(), lr = cfg.LR, amsgrad=True) 
-    criterion = nn.SmoothL1Loss()
-    
-    # 3 - Initialize stat tracking objects
-    st = StatTracker()
-
-    # 4 - Initialize replay memory
-    rm = ReplayMemory(cfg.MEMORY_SIZE)
-
-    exp = {'cfg': cfg,
-           'env': env,
-           'stepsDone': stepsDone,
-           'policyNet': policyNet,
-           'targetNet': targetNet,
-           'optimizer': optimizer,
-           'criterion': criterion,
-           'statTracker': st,
-           'replayMemory': rm}
-
-    print("\tDone!")
-    return exp
 
 def initExperiment(cfg, fold):
     
@@ -494,34 +450,62 @@ def runExperiment(cfg):
         # 1 - Init experiment env, models, opt, loss, stat objects, etc
         exp_i = initExperiment(cfg, fold)
         
-        # train
-        train(0, exp_i)
+        for e in range(cfg.EPOCHS):
+            
+            # train
+            train(e, exp_i)
 
-        # test the model in both train/test partitons (no exploration)
-        test(0, exp_i, exp_i['envVal'], exp_i['statTrackerVal'])
-        test(0, exp_i, exp_i['envTest'], exp_i['statTrackerTest'])
+            # test the model in both train/test partitons (no exploration)
+            test(e, exp_i, exp_i['envVal'], exp_i['statTrackerVal'])
+            test(e, exp_i, exp_i['envTest'], exp_i['statTrackerTest'])
+
         exp[i+1] = exp_i
 
     print("\tDone!")
     return exp
 
-def saveAndVisualize(cfg, exp):
+def saveAndVisualizePerEpoch(cfg, exp):
+
+    print("Saving per epoch results")
+
+    epochs = range(cfg.EPOCHS)
+    rewardVal = []
+    rewardTest = []
+    delayVal = []
+    delayTest = []
+
+    for epoch in epochs:
+
+        rewardVal_e, rewardTest_e, _ = _recoverKFoldStat(cfg, exp, 'instant_reward', epoch=epoch, func='sum', reduction=True)
+        delayVal_e, delayTest_e, _ = _recoverKFoldStat(cfg, exp, 'episode_delay', epoch=epoch, func='last', reduction=True)
+
+        rewardVal.append(np.mean(rewardVal_e))
+        rewardTest.append(np.mean(rewardTest_e))
+        delayVal.append(np.mean(delayVal_e))
+        delayTest.append(np.mean(delayTest_e))
+
+    p = 'figs/epochs/'
+    plotHelper3( epochs, rewardVal, epochs, rewardTest, 'epoch', 'average reward', 'Average reward per epoch', ['train', 'test'], p+'rewards.png')
+    plotHelper3( epochs, delayVal, epochs, delayTest, 'epoch', 'average delay', 'Average delay per epoch', ['train', 'test'], p+'delays.png')
+    return
+
+def saveAndVisualizePerRecipe(cfg, exp, epoch=0):
     
-    print("Saving and visualizing results")
+    print("Saving per recipe results")
     
     # 1 - Get all recipe names alfabetically sorted
-    rewardVal, rewardTest, recipeNames = _recoverKFoldStat(cfg, exp, 'instant_reward', func='sum', reduction=True)
-    aTakenVal, aTakenTest, _ = _recoverKFoldStat(cfg, exp, 'actions_taken', func='notIdleActions', reduction=True)
-    delayVal, delayTest, _ = _recoverKFoldStat(cfg, exp, 'episode_delay', func='last', reduction=True)
-    reactiveTimes, _, _ = _recoverKFoldStat(cfg, exp, 'reactive_time', func='last', reduction=True)
-    minDelays, _, _ = _recoverKFoldStat(cfg, exp, 'min_delay', func='last', reduction=True)
+    rewardVal, rewardTest, recipeNames = _recoverKFoldStat(cfg, exp, 'instant_reward', epoch=epoch, func='sum', reduction=True)
+    aTakenVal, aTakenTest, _ = _recoverKFoldStat(cfg, exp, 'actions_taken', epoch=epoch, func='notIdleActions', reduction=True)
+    delayVal, delayTest, _ = _recoverKFoldStat(cfg, exp, 'episode_delay', epoch=epoch, func='last', reduction=True)
+    reactiveTimes, _, _ = _recoverKFoldStat(cfg, exp, 'reactive_time', epoch=epoch, func='last', reduction=True)
+    minDelays, _, _ = _recoverKFoldStat(cfg, exp, 'min_delay', epoch=epoch, func='last', reduction=True)
 
     plotHelper2(rewardVal, rewardTest, '#recipe', 'reward', 'total reward per recipe', 
-                ['val', 'test'], recipeNames, 'figs/allFolds/total_reward.png')
+                ['val', 'test'], recipeNames, 'figs/allFolds/total_reward_epoch_%d.png' %epoch)
     plotHelper2(aTakenVal, aTakenTest, '#recipe', '#actions', 'total actions taken (!=5) per recipe', 
-                ['val', 'test'], recipeNames, 'figs/allFolds/actions_taken.png')
+                ['val', 'test'], recipeNames, 'figs/allFolds/actions_taken_epoch_%d.png' %epoch)
     plotHelper2(delayVal, delayTest, '#recipe', 'delay (frames)', 'total delay per per recipe', 
-                ['val', 'test', 'reacTime', 'oracle'], recipeNames, 'figs/allFolds/delay.png', reactiveTimes, minDelays)
+                ['val', 'test', 'reacTime', 'oracle'], recipeNames, 'figs/allFolds/delay_epoch_%d.png' %epoch, reactiveTimes, minDelays)
     
     # save all the recipes (test) to visualize the kind of actions the robot took
     for k in exp.keys():
@@ -533,7 +517,7 @@ def saveAndVisualize(cfg, exp):
     print("\tDone!")
     return
 
-def _recoverKFoldStat(cfg, exp, statName, func='sum', reduction=True):
+def _recoverKFoldStat(cfg, exp, statName, epoch=0, func='sum', reduction=True):
 
     # 1 - Get all recipe names alfabetically sorted
     path = os.path.join(cfg.ANNOTATIONS_FOLDER, cfg.DATASET_NAME)
@@ -554,12 +538,12 @@ def _recoverKFoldStat(cfg, exp, statName, func='sum', reduction=True):
         stTest = exp_i['statTrackerTest'] 
 
         # get the resultVal and resultTest coordinates for the values
-        valCols  = [r2c[r[0]] for r in stVal.get('episode_name', 0)]
-        testCols = [r2c[r[0]] for r in stTest.get('episode_name', 0)]
+        valCols  = [r2c[r[0]] for r in stVal.get('episode_name', epoch)]
+        testCols = [r2c[r[0]] for r in stTest.get('episode_name', epoch)]
         valRows  = [i] * len(valCols)
 
-        valuesVal  = [_applyFunc(epi, func) for epi in stVal.get(statName, 0)]
-        valuesTest = [_applyFunc(epi, func) for epi in stTest.get(statName, 0)]
+        valuesVal  = [_applyFunc(epi, func) for epi in stVal.get(statName, epoch)]
+        valuesTest = [_applyFunc(epi, func) for epi in stTest.get(statName, epoch)]
 
         # lets fill the valMat and testMat
         valMat[valRows, valCols] = valuesVal
@@ -603,4 +587,5 @@ if( __name__ == '__main__' ):
     exp = runExperiment(cfg)
 
     # 4 - Save and visualize results
-    saveAndVisualize(cfg, exp)
+    #saveAndVisualizePerRecipe(cfg, exp, epoch=cfg.EPOCHS-1)
+    saveAndVisualizePerEpoch(cfg, exp)

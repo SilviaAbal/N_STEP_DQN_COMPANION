@@ -52,8 +52,6 @@ def plotEpochStats( st, epoch ):
 
 def plotHelper( xData, yData, xLabel, yLabel, title, filePath, addLPF=False):
 
-    
-
     fig, ax = plt.subplots()
     ax.plot(xData, yData, 'b')
 
@@ -99,4 +97,19 @@ def plotHelper2( yData1, yData2, xLabel, yLabel, title, legend, recipeNames, fil
     ax.set_xticklabels(recipeNames, rotation=90)
 
     fig.savefig(filePath, bbox_inches="tight")
+    return
+
+def plotHelper3( xData1, yData1, xData2, yData2, xLabel, yLabel, title, legend, filePath):
+
+    fig, ax = plt.subplots()
+    ax.plot(xData1, yData1, 'b', label=legend[0])
+    ax.plot(xData2, yData2, 'r', label=legend[1])
+
+    ax.set_xlabel(xLabel)
+    ax.set_ylabel(yLabel)
+    ax.set_title(title)
+    #ax.set_xticks(xData1)
+    ax.legend()
+
+    fig.savefig(filePath)
     return
