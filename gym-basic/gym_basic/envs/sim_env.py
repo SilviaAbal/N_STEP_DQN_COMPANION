@@ -14,9 +14,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from datetime import datetime
 from itertools import cycle, count
+import pdb
 
 import config2 as cfg
 from utils import readTestTxt
+
 
 class AtomicAction():
 
@@ -30,6 +32,7 @@ class AtomicAction():
         self.duration = frameEnd - frameInit
         self.requiresRobot = requiresRobot
         self.requiredObj  = requiredObj
+        
         return
     
     def __str__(self):
@@ -64,8 +67,11 @@ class Episode():
         self.atomicActions = []
         self.frameFeatures = None 
         self.lastFrame = None
-        self.reactiveTime = 0
+        self.reactiveDelay = 0
         self.minDelay = 0
+        self.minTime = 0
+        self.reactiveTime = 0
+        self.interactionTime = 0
 
         # attributes that must be reset each time the episode starts
         self.currentFrame = 0
@@ -76,6 +82,8 @@ class Episode():
 
         # load the episode info
         self.loadEpisode()
+        
+        # self.minFrameEnd = 0
         return
     
     def reset(self):
@@ -161,6 +169,8 @@ class Episode():
         totalFrames = self.frameFeatures.shape[0]
         return totalFrames if mode == 'frames' else self.fps2time(totalFrames)
     
+   
+    
     def getOptimalLength(self, mode='frames'):
 
         totalFrames = self.getTotalLength(mode='frames')
@@ -187,6 +197,7 @@ class Episode():
         replicateFactor = self.videoFPS / self.featFPS
         self.frameFeatures = np.repeat(self.frameFeatures, replicateFactor, axis=0)
 
+        # print(self.frameFeatures.shape)
         # 3 - Read labels
         pandasDF = np.load(self.labelsPath, allow_pickle=True)
         #print(pandasDF)
@@ -221,6 +232,23 @@ class Episode():
         # Finally, remove the frames that belong to self.actions2Remove
         self.frameFeatures = self.frameFeatures[keep]
         self.lastFrame = self.frameFeatures.shape[0]-1
+        
+        # fr_quit = 0
+        # df_filt = pandasDF[pandasDF['label'].isin(self.robotNeededActions)]
+        # self.minFrameEnd = pandasDF.iloc[-1]['frame_end']
+        
+        # if not df_filt.empty:
+        #     index_filt = df_filt.index.tolist()
+        #     for idx, val in enumerate(index_filt):
+        #         fr_quit += pandasDF.iloc[val]['frame_end'] - pandasDF.iloc[val-1]['frame_end']
+        # self.minFrameEnd -= fr_quit
+        
+        # # print(pandasDF)
+        # # print(df_filt)
+        # # print(self.minFrameEnd)
+        # print(self.lastFrame)
+        # print(pandasDF)
+        # pdb.set_trace()
         return
 
     def __str__(self):
@@ -243,7 +271,7 @@ class Episode():
         
         return
     
-    def visualizeAndSave(self, mode='time'):
+    def visualizeAndSave(self, save_file,epoch,mode='time'):
 
         # Create a figure and axis
         fig, ax = plt.subplots()
@@ -284,6 +312,9 @@ class Episode():
             xticklabels.extend([str(startTime), str(startTime + duration)])
 
         for k,v in self.actionsTaken.items():
+            # print('k: ',k)
+            # print('v: ',v)
+            # pdb.set_trace()
             ax.text(k, 0.30, v, ha='center', va='center', fontsize=14, color='g')
 
         # Set the x-axis limit
@@ -306,8 +337,9 @@ class Episode():
 
         # Save the timeline as a PNG image
         ax.set_title(self.folderName)
-        imName = 'figs/recipes/' + self.folderName + '.png'
+        imName = save_file + '/'+self.folderName + '_'+str(epoch)+'.jpg'
         plt.savefig(imName, bbox_inches='tight', dpi=300)
+        plt.close()
         #plt.show()
         return
 
@@ -349,21 +381,54 @@ class SimulatedEnv(gym.Env):
         self.episode = None  
         self.oit = copy.deepcopy(cfg.OBJECTS_INIT_STATE)
         
+        if cfg.ONLY_TEST:
+            if cfg.TEMPORAL_CONTEXT:
+                # print(self.folderPath)
+                self.robot_execution_times = np.load("./Checkpoints/"+cfg.EXPERIMENT_NAME+"/robot_execution_times",allow_pickle=True)
+                # pdb.set_trace()
+                # print(self.robot_execution_times)
+                # pdb.set_trace()
+            else:
+                self.robot_execution_times = np.array(list(cfg.ROBOT_AVERAGE_DURATIONS.values()))[:len(cfg.ROBOT_ACTIONS_2_OBJECTS)-1]
+           
+        else:
+            self.robot_execution_times = np.array(list(cfg.ROBOT_AVERAGE_DURATIONS.values()))[:len(cfg.ROBOT_ACTIONS_2_OBJECTS)-1]
+        
+        
         # 2 - set action and observation spaces
-        stateDims = cfg.ANNOTATIONS_DIM + len(cfg.OBJECTS_INIT_STATE)
+        if cfg.TEMPORAL_CONTEXT:
+            stateDims = cfg.ANNOTATIONS_DIM + len(cfg.OBJECTS_INIT_STATE) + len(cfg.ROBOT_ACTIONS_2_OBJECTS) -1
+        else:
+            stateDims = cfg.ANNOTATIONS_DIM + len(cfg.OBJECTS_INIT_STATE)
+     
         self.stateDims = stateDims
+        # print('dims: ',stateDims)
+        # pdb.set_trace()
         low = -np.inf * np.ones(stateDims)
         high = np.inf * np.ones(stateDims)
 
         self.action_space = spaces.Discrete(cfg.NUM_ROBOT_ACTIONS)
         self.observation_space = spaces.Box(low = low, high = high, dtype=np.float32)
-
+        
+        self.action_space.seed(cfg.SEED)
+        self.observation_space.seed(cfg.SEED)
+        
         # 3 - read episodes
         self.loadEpisodes()
         self.computeEpisodesReactiveTime()
         self.computeEpisodesMinDelay()
+        
+        self.CA_intime = 0
+        self.CA_late = 0
+        self.IA_intime = 0
+        self.IA_late = 0
+        self.CI = 0
+        self.II = 0
+        
         return
     
+    def get_robot_execution_times(self):
+        return self.robot_execution_times
     def computeEpisodesReactiveTime(self):
 
         """
@@ -376,7 +441,8 @@ class SimulatedEnv(gym.Env):
             while self.episode.terminated is False:
                 self.step(5)
 
-            self.episode.reactiveTime = self.episode.delay
+            self.episode.reactiveDelay = self.episode.delay
+            self.episode.reactiveTime = self.episode.delay + self.episode.lastFrame
             #self.episode.reset()
         
         return
@@ -408,6 +474,7 @@ class SimulatedEnv(gym.Env):
                 self.step(5)
 
             self.episode.minDelay = self.episode.delay
+            self.episode.minTime = self.episode.lastFrame + self.episode.delay
             #self.episode.reset()
 
         return
@@ -417,6 +484,7 @@ class SimulatedEnv(gym.Env):
         # read episode folders
         dbFolder = os.path.join(cfg.ANNOTATIONS_FOLDER, cfg.DATASET_NAME)
         testPath = os.path.join(cfg.ANNOTATIONS_FOLDER, self.testfile)
+        
         
         allFolders  = glob.glob(dbFolder+"/*")
         testFolders = [os.path.join(dbFolder, testFolder) for testFolder in readTestTxt(testPath)]
@@ -436,6 +504,7 @@ class SimulatedEnv(gym.Env):
 
         self.numEpisodes = len(e)
         self.allEpisodes = cycle(e)
+        print(self.mode)
         return
 
     def isImposibleAction(self, action):
@@ -457,21 +526,34 @@ class SimulatedEnv(gym.Env):
         # the random delay is there to avoid always taking the same
         # frames, either the 0 frame or the same exact reward instants.
         # Pass 0 if you want to avoid this random delay
+        # random.seed(10)
         delay = random.randint(0, randomDelay)
-
+        # delay = 12
         # we need to check that the delay doesn't cause the time to advance
         # beyond an ASR event
         futureTime = self.episode.currentFrame + delay
         ac = self.episode.findNextRobotAction()
         maxTime = min(futureTime, ac.frameInit)
-
+        
         self.episode.advanceTo(maxTime)
         #self.episode.skipFrames(delay)
         if cfg.ENV_VERBOSE: print("\t\tRandom delay = %d" %delay)
 
         feat = self.episode.frameFeatures[self.episode.currentFrame]
         oit = np.array(list(self.oit.values()), dtype=np.float32)
-        return np.concatenate((feat, oit), axis=0)
+        if cfg.TEMPORAL_CONTEXT:
+              
+            # path_time_to_finish_pkl = os.path.join(videos_realData[video_idx], "remaining_frames") # Path to pickle as ./root_realData/videos_realData[video_idx]/frame_pkl
+            path_time_to_finish_pkl = os.path.join(self.episode.folderPath, "remaining_frames") # Path to pickle as ./root_realData/videos_realData[video_idx]/frame_pkl
+            # 1) El output de María ya está normaliado entre -1,1
+            self.human_time_to_finish = np.array([np.load(path_time_to_finish_pkl,allow_pickle=True).numpy().squeeze()[0]])
+            ratio_time_finish = []
+            ratio_time_finish = [0.0 if x == 0 else self.human_time_to_finish.item() / x for x in self.robot_execution_times]
+            ratio_time_finish_arr = np.array(ratio_time_finish)
+            # pdb.set_trace()
+            return np.concatenate((feat, oit,ratio_time_finish_arr), axis=0)
+        else:
+            return np.concatenate((feat, oit), axis=0)
     
     def reset(self, options={}):
 
@@ -496,6 +578,15 @@ class SimulatedEnv(gym.Env):
         if cfg.ENV_VERBOSE:
             self.episode.visualizeAndSave(mode='frames')
             print("Recipe: %s" %(self.episode.folderPath))
+            
+        self.CA_intime = 0
+        self.CA_late = 0
+        self.IA_intime = 0
+        self.IA_late = 0
+        self.UA_intime = 0
+        self.UA_late = 0
+        self.CI = 0
+        self.II = 0
 
         return state, {}
     
@@ -523,6 +614,7 @@ class SimulatedEnv(gym.Env):
 
         if cfg.ROBOT_ACTIONS_MEANINGS[action] == 'do nothing':
             Rt, Re, R, nextState = self.stepIdle(action)
+            
         else:
             Rt, Re, R, nextState = self.stepAction(action)
 
@@ -532,9 +624,16 @@ class SimulatedEnv(gym.Env):
             print("Rt = %.4f, Re = %.4f, R = %.4f" %(Rt, Re, R))
             print("total recipe delay (in frames): %d" %(self.episode.delay))
 
+        self.episode.interactionTime = self.episode.currentFrame
+        if self.episode.terminated or self.episode.truncated:
+            self.episode.interactionTime = self.episode.currentFrame + self.episode.delay
+        #     infoDict = {'timeReward': Rt, 'energyReward': Re, 'interactionTime': timeInteraction}
+            
+            # pdb.set_trace()
         
-        infoDict = {'timeReward': Rt, 'energyReward': Re}
-
+        infoDict = {'timeReward': Rt, 'energyReward': Re, 'interactionTime': self.episode.interactionTime, 'minTime': self.episode.minTime, 'reactiveTime':self.episode.reactiveTime}
+        # print(infoDict)
+        
         return nextState, R, self.episode.terminated, self.episode.truncated, infoDict
     
     def stepIdle(self, action):
@@ -557,7 +656,7 @@ class SimulatedEnv(gym.Env):
             
             # if necessary object is NOT on the table
             if self.oit[ac.requiredObj] != 1:
-
+                self.II += 1
                 if cfg.ENV_VERBOSE: 
                     print("\tNecessary object not on the table: ASR")
             
@@ -570,6 +669,7 @@ class SimulatedEnv(gym.Env):
                 self.episode.advanceTo(ac.frameInit)
             
             else:
+                self.CI += 1
                 # the necessary object was on the table, thus, advance frames normally
                 self.episode.skipFrames(cfg.DECISION_RATE)
 
@@ -577,7 +677,7 @@ class SimulatedEnv(gym.Env):
 
             if cfg.ENV_VERBOSE: 
                 print("\tStill time til next robot action")
-
+            self.CI += 1
             self.episode.skipFrames(cfg.DECISION_RATE)
             
         # compute nextState
@@ -602,11 +702,33 @@ class SimulatedEnv(gym.Env):
         if robotActionEnds < ac.frameInit:
             Rt, Re, R, nextState = self.stepActionInTime(
                 action, framesNeededRobot, robotActionEnds, ac)
-        
+            
+            if R == 0:
+                self.CA_intime += 1
+            elif Re == 0 and Rt !=0:
+                self.IA_late += 1
+            elif Re != 0 and Rt ==0:
+                self.IA_intime += 1
+            else:
+                self.IA_late += 1
+ 
+            
         # robot action ends AFTER the next needRoot atomic action
         else:
             Rt, Re, R, nextState = self.stepActionLate(
                 action, framesNeededRobot, robotActionEnds, ac)
+
+            if R == 0:
+                self.CA_intime += 1
+            elif Re == 0 and Rt != 0:
+                self.CA_late += 1
+                # pdb.set_trace()
+            if Re != 0 and Rt == 0:
+                self.IA_intime += 1
+            elif Re!=0 and Rt!=0:
+                self.IA_late += 1
+                
+        
                     
         return Rt, Re, R, nextState
    
@@ -638,10 +760,12 @@ class SimulatedEnv(gym.Env):
 
         # compute reward
         if self.episode.isObjectNecessary(objTaken) and self.oit[objTaken] == 0:
+            
             timeReward, energyReward, reward = 0,0,0
         
         else:
             if self.episode.currentFrame == ac.frameInit:
+               
                 # if requiredObj is not on the table, asr is necessary
                 asr = (self.oit[ac.requiredObj] == 0)
                 timeReward, energyReward, reward = self.computeReward(
@@ -650,6 +774,7 @@ class SimulatedEnv(gym.Env):
                 self.oit[ac.requiredObj] = 1
                 
             else:
+                
                 timeReward, energyReward, reward = self.computeReward(
                     actionFrame, ac.frameInit, objTaken, 5, ASR=False,
                     framesNeeded=framesNeededRobot)
@@ -700,7 +825,7 @@ class SimulatedEnv(gym.Env):
 
         # if the human does not need to wait
         if acWaiting is None:
-
+            
             # move to robotActionEnds frame
             self.episode.advanceTo(robotActionEnds)
 
@@ -719,7 +844,7 @@ class SimulatedEnv(gym.Env):
 
         # the human needs to wait because the requiredObj is not on the table
         else: 
-
+           
             # compute reward depending on whether the object was correct or not
             asr = False if objTaken == acWaiting.requiredObj else True
             if cfg.ENV_VERBOSE: print("ASR?: %s" %(str(asr)))
@@ -791,13 +916,34 @@ class SimulatedEnv(gym.Env):
         probFail = cfg.ROBOT_PROB_FAILURE
         humanTime = cfg.ROBOT_AVERAGE_DURATIONS[object]
         failed = random.random() < probFail
-
+        # failed = False
         mu = beta*(humanTime + failed*(0.5*humanTime))
         std = 0.2*mu
 
+        
         time = int(random.gauss(mu,std))
+        # time = mu
+        if cfg.ONLY_TEST:
+            time = mu
+        
+        if cfg.TEMPORAL_CONTEXT:
+            if humanTime != 0:
+                value = [i for i in cfg.ROBOT_AVERAGE_DURATIONS if cfg.ROBOT_AVERAGE_DURATIONS[i]==humanTime]
+                action = [item for item in value if isinstance(item, int)][0]
+                self.robot_execution_times[action] = 0.95 * self.robot_execution_times[action] + (1-0.95) * time
+        # time =mu
         return time
 
+    def updateOit(self, update):
+        
+        self.oit = copy.deepcopy(update)
+        
+    def updateCurrentFrame (self, frame):
+        
+        self.episode.currentFrame = frame
+        # self.episode.advanceTo(frame)
+    def updateDelay (self, delay):
+        self.episode.delay = delay
     def computeHumanTime(self, object):
 
         return cfg.ROBOT_AVERAGE_DURATIONS[object]
