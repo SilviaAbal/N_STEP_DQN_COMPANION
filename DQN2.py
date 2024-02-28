@@ -20,37 +20,51 @@ class DQN_LSTM_LateFusion(nn.Module):
         self.input_size = input_size
         self.hidden_size_LSTM = hidden_size_LSTM
         self.output_size = output_size
-
+        num_embedding = 4
+        
         self.embedding_size = 32
         self.resetHidden()
 
-
+        
         self.input_AcPred = nn.Sequential(
             nn.Linear(33, self.embedding_size),
+            torch.nn.LayerNorm(self.embedding_size),
             # nn.BatchNorm1d(self.embedding_size),
             nn.ReLU()
         )
         
         self.input_AcRec = nn.Sequential(
             nn.Linear(33, self.embedding_size),
+            torch.nn.LayerNorm(self.embedding_size),
             # nn.BatchNorm1d(self.embedding_size),
             nn.ReLU()            
         )
         
         self.input_VWM = nn.Sequential(
             nn.Linear(44, self.embedding_size),
+            torch.nn.LayerNorm(self.embedding_size),
             # nn.BatchNorm1d(self.embedding_size),
             nn.ReLU()            
         )
         
         self.input_OiT = nn.Sequential(
             nn.Linear(23, self.embedding_size),
+            torch.nn.LayerNorm(self.embedding_size),
             # nn.BatchNorm1d(self.embedding_size),
             nn.ReLU()            
         )
         
+        if cfg.TEMPORAL_CONTEXT:
+            num_embedding = 5
+            self.input_TempCtx = nn.Sequential(
+                nn.Linear(5, self.embedding_size),
+                torch.nn.LayerNorm(self.embedding_size),
+                # nn.BatchNorm1d(self.embedding_size),
+                nn.ReLU()            
+            )
         self.hidden1 = nn.Sequential(
-            nn.Linear(self.embedding_size*4, 256),
+            nn.Linear(self.embedding_size*num_embedding, 256),
+            torch.nn.LayerNorm(256),
             # nn.BatchNorm1d(512),
             nn.ReLU()
         )
@@ -58,7 +72,8 @@ class DQN_LSTM_LateFusion(nn.Module):
 
         self.lstm = nn.LSTM(256, hidden_size_LSTM, batch_first = True)
         self.init_lstm_weights()
-        #self.norm = torch.nn.LayerNorm(hidden_size_LSTM)
+        self.norm = torch.nn.LayerNorm(hidden_size_LSTM)
+        
 
         # self.init_lstm_weights()
         self.output_layer = nn.Sequential(
@@ -68,6 +83,9 @@ class DQN_LSTM_LateFusion(nn.Module):
             nn.Linear(256, output_size)
         )       
        
+        self.init_weights()
+        self.init_lstm_weights()
+        
     def resetHidden(self):
 
         self.hidden = (torch.zeros(1,self.hidden_size_LSTM).to(cfg.DEVICE),
@@ -77,6 +95,7 @@ class DQN_LSTM_LateFusion(nn.Module):
         return
     
     def init_lstm_weights(self):
+        
         for name, param in self.lstm.named_parameters():
            if "weight_ih" in name:
                for sub_name in ["weight_ih_i", "weight_ih_f", "weight_ih_g", "weight_ih_o"]:
@@ -89,6 +108,14 @@ class DQN_LSTM_LateFusion(nn.Module):
            elif "bias" in name:
                nn.init.constant_(param.data, 0)
                 
+               
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+                    
     def forward(self, inputs, hidden=None):
 
         hiddenT = self.hidden if hidden is None else hidden
@@ -112,8 +139,18 @@ class DQN_LSTM_LateFusion(nn.Module):
         x2 = self.input_AcRec(ac_rec)
         x3 = self.input_VWM(vwm)
         x4 = self.input_OiT(oit)
-
-        x = torch.cat((x1, x2, x3, x4), dim)         
+        if cfg.TEMPORAL_CONTEXT:
+            if len(inputs.shape) < 3:
+                temp_ctx = inputs[:,133:]
+            else:
+                temp_ctx = inputs[:, :,133:]
+            # print(temp_ctx.shape)
+            # pdb.set_trace()
+            x5 = self.input_TempCtx(temp_ctx)
+            x = torch.cat((x1, x2, x3, x4, x5), dim) 
+        else:
+            x = torch.cat((x1, x2, x3, x4), dim)         
+        
         x = self.hidden1(x)
         
         output, (hx, cx) = self.lstm(x, hiddenT)
@@ -156,6 +193,7 @@ class DQN_MLP(nn.Module):
         x = F.relu(self.layer2(x))
         
         return self.layer3(x), self.hidden
+
 
 
 if __name__ == '__main__':

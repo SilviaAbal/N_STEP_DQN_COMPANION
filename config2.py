@@ -6,22 +6,40 @@ import torch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training config
-FOLDS = ['fold'+str(i)+'_test.txt' for i in range(1,6)]
+# FOLDS =  ['fold1_test.txt','fold2_test.txt','fold3_test.txt','fold4_test.txt','fold5_test.txt']
+FOLDS =  ['fold5_test.txt']
 HIDDEN_SIZE_LSTM = 512
 LR = 1e-4
-EPOCHS = 800
-NUM_EPISODES = 61
-BATCH_SIZE = 128
-GAMMA = 0.9
+EPOCHS = 400
+NUM_EPISODES = 73
+BATCH_SIZE = 500
+GAMMA = 0.99
 EPS_START = 0.99
 EPS_END = 0.1
-EPS_DECAY = 5e4
+# EPS_DECAY = 5e4
+EPS_DECAY = EPOCHS
 TAU = 0.005
-N_STEP = 3
-
+N_STEP = 5
+UPDATE_TARGET = 300
+SEED = 97
+ONLY_TEST =  False
+NO_ACTION_PROBABILITY = 0
+PROB_APRIORI_v1 = 0
 # REPLAY MEMORY
-MEMORY_SIZE = 50000
+MEMORY_SIZE = 20000
+PRIORITAZED_MEMORY = False
+TEMPORAL_CONTEXT = False
+CLIP_REWARD = False
+NO_IMPOSSIBLE_ACTIONS = False
+STEP_BY_STEP = True
+BORDE = True
 
+EPSILON = 1e-5
+ALPHA = 0.3
+BETA = 1
+
+EXPERIMENT_NAME = 'fold5_DQN_update_rate_300_metiendo_borde_1_STEPS_28-02-2024_13:09_step_by_step_SEED_97_MEM_SIZE_20000NO_ACTION_PROB_0_BETA_1.25_LAMBDA_0.001'
+NUM_LOOP =  '0'
 # ENVIROMENT CONFIG
 ROBOT_ACTIONS_MEANINGS = {
 	0: 'bring butter', 1: 'bring jam', 2: 'bring milk',	3: 'bring nutella',	4: 'bring tomato sauce', 5: 'do nothing',
@@ -66,6 +84,7 @@ OBJECTS_INIT_STATE = { # whether an object is recheable by the person (1) or is 
 ENV_VERBOSE = False
 ANNOTATIONS_FOLDER = './video_annotations'
 DATASET_NAME = 'dataset_pred_recog_tmp_ctx'
+# DATASET_NAME = 'dataset_less_videos'
 LABELS_FILE_NAME = 'labels_updated.pkl'
 ANNOTATIONS_FPS = 5
 ANNOTATIONS_DIM = 110 # the number of features from gaze
@@ -75,13 +94,13 @@ ROBOT_NEEDED_FOR_ACTIONS = [1, 16, 17, 18, 19, 25]
 ACTIONS_TO_REMOVE_FROM_RECIPES = [8, 12, 13, 14, 15]
 
 ASR_PENALTY = 3.5*VIDEO_FPS # 3.5 seconds expressed as frames
-FACTOR_ENERGY_PENALTY = 0.1
-IMPOSSIBLE_ACTION_PENALTY = 10
+FACTOR_ENERGY_PENALTY = 0.001
+IMPOSSIBLE_ACTION_PENALTY = 100
 
 INTERACTIVE_OBJECTS_ROBOT = ['butter','jam','milk','nutella','tomato sauce']
 NUM_ROBOT_ACTIONS = len(ROBOT_ACTIONS_MEANINGS)
 NUM_OBJECTS = len(OBJECTS_MEANINGS)
 
 # robot times modeled as gaussian
-ROBOT_TIME_BETA = 1
+ROBOT_TIME_BETA = 1.25
 ROBOT_PROB_FAILURE = 0
